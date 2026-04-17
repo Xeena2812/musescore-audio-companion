@@ -2,12 +2,12 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.9.0
+// v0.9.1
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.9.0"
+    version: "0.9.1"
     pluginType: "dialog"
     width: 460
     height: 144
@@ -69,7 +69,7 @@ MuseScore {
     property bool   vlcConnected: false
     property string vlcState: "stopped"    // "stopped" | "playing" | "paused"
 
-    // Fire-and-forget GET; cb(ok, responseText)
+    // Fire-and-forget GET; cb(ok, responseText, httpStatus)
     function _vlcGet(query, cb) {
         var xhr = new XMLHttpRequest()
         var url = _vlcBase + "/requests/status.xml" + (query ? "?" + query : "")
@@ -84,7 +84,7 @@ MuseScore {
         xhr.setRequestHeader("Authorization", "Basic " + encoded)
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) return
-            if (cb) cb(xhr.status === 200, xhr.responseText)
+            if (cb) cb(xhr.status === 200, xhr.responseText, xhr.status)
         }
         xhr.send()
     }
@@ -232,14 +232,15 @@ MuseScore {
         repeat: true
         running: true
         onTriggered: {
-            root._vlcGet("", function (ok, xml) {
+            root._vlcGet("", function (ok, xml, httpStatus) {
                 if (ok) {
                     root._parseVlc(xml)
-                } else if (root.vlcConnected) {
+                } else {
                     root.vlcConnected = false
                     root.vlcState     = "stopped"
                     root.isPlaying    = false
-                    root.statusText   = "v" + root.version + " — VLC not running"
+                    // httpStatus 0 = network unreachable; 401 = bad auth; 404 = wrong URL
+                    root.statusText   = "VLC: HTTP " + httpStatus + " — start-vlc-server.sh?"
                 }
             })
         }
