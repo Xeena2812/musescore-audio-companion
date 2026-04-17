@@ -15,7 +15,7 @@ A MuseScore 4 plugin (QML) that plays back an external audio file synchronized w
 - Logs: `~/snap/musescore/current/.local/share/MuseScore/MuseScore4/logs/`
 - Qt 6 (MU4.4+ uses Qt 6)
 - No Plugin Creator in MU4 — edit files externally, then reload via **Plugins → Manage Plugins → Reload**
-- **QtMultimedia is confirmed available** in the snap sandbox — `MediaPlayer`, `AudioOutput`, and `.position` seek all work
+- **QtMultimedia objects instantiate** in the snap sandbox but `QMediaPlayer` requires a GStreamer backend to actually play audio. Required system packages (install once): `sudo apt install libqt6multimedia6 gstreamer1.0-qt6`. Codec plugins `gstreamer1.0-plugins-good` and `gstreamer1.0-libav` cover MP3/FLAC/OGG/WAV and are already installed on the dev machine.
 
 ## Development Workflow
 
