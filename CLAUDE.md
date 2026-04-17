@@ -19,15 +19,17 @@ A MuseScore 4 plugin (QML) that plays back an external audio file synchronized w
 
 ## Development Workflow
 
-There is no build step. Edit `.qml` files in this repo, **copy them to the MuseScore plugins folder**, then reload in MuseScore:
+There is no build step. Edit `.qml` files in this repo, **copy to the MuseScore plugins folder**, then disable + re-enable the plugin in MuseScore for changes to take effect:
 
 ```bash
-cp -r ~/Projects/musescore-audio-companion/ ~/Documents/MuseScore4/Plugins/audio-companion/
+cp ~/Projects/musescore-audio-companion/AudioCompanion.qml ~/Documents/MuseScore4/Plugins/
 ```
 
 ```
-Plugins → Manage Plugins → [select plugin] → Reload
+Plugins → Manage Plugins → uncheck → check → Close, then run again
 ```
+
+Simply re-running the plugin from the menu re-executes `onRun` but does **not** re-parse the QML — disable/re-enable is required for any structural or UI changes.
 
 To check logs after a crash or QML error:
 ```bash
@@ -42,7 +44,9 @@ QtMultimedia is confirmed working in the snap sandbox (tested via probe plugin).
 - `import QtQuick` — no version number
 - Never use `Qt.quit()` — use `quit()` instead
 - Score modifications must be wrapped in `curScore.startCmd()` / `curScore.endCmd()`
-- **Do not use `QtQuick.Dialogs`** — broken in MU4.4+; use a custom QML dialog instead
+- **Do not use `QtQuick.Dialogs`** — broken in MU4.4+
+- **`pluginType: "dock"` is broken in MU4** due to the UI rewrite — use `"dialog"` only
+- For file pickers, use `Qt.labs.platform.FileDialog` loaded via `Qt.createQmlObject` (dynamic import), so the plugin still loads if the module is absent from the snap. Connect signals imperatively with `.onAccepted.connect(...)`
 - **Do not `import Qt.labs.settings`** — Settings is integrated into the MuseScore module
 
 ## Architecture

@@ -2,164 +2,319 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
+// v0.4.0
 MuseScore {
     id: root
-    title: "QtMultimedia Probe"
-    description: "Tests whether QtMultimedia is available in the MuseScore snap sandbox"
-    pluginType: "dialog"
-    width: 480
-    height: 280
+    title: "Audio Companion"
+    description: "Plays an audio file in sync with score playback"
+    version: "0.4.0"
+    pluginType: "dock"
+    dockArea: "bottom"
+    width: 460
+    implicitHeight: 122
 
-    // Results populated during onRun
-    property string overallStatus: "Waiting..."
-    property string volumeStatus: ""
-    property string seekStatus: ""
+    // ── Persistent settings ───────────────────────────────────────────────
+    // QSettings default path is blocked by the snap sandbox (AccessError).
+    // Fix: supply an explicit fileName inside the plugins folder, which the
+    // snap can always write to. Probe QtCore (Qt 6) then Qt.labs.settings.
+    property var _cfg: null
 
-    onRun: {
-        var player = null
+    function _cfgGet(key, def) {
+        if (_cfg) {
+            var v = _cfg[key]
+            if (v !== undefined && v !== null) return v
+        }
+        return def
+    }
+    function _cfgSet(key, val) {
+        if (_cfg) _cfg[key] = val
+    }
 
-        // Attempt 1: instantiate MediaPlayer
+    function _initSettings() {
+        // Qt.resolvedUrl resolves relative to this QML file, so the INI lands
+        // next to AudioCompanion.qml — a path the snap sandbox can write to.
+        var iniPath = Qt.resolvedUrl("audio-companion.ini").toString().replace(/^file:\/\//, "")
+        var body =
+            'fileName: "' + iniPath + '"\n' +
+            'property string scoreFileMap: "{}"\n' +
+            'property string lastFilePath: ""\n' +
+            'property real   volume: 1.0\n' +
+            'property int    delayMs: 0\n'
+
         try {
-            player = Qt.createQmlObject(
-                'import QtMultimedia; MediaPlayer { autoPlay: false }',
-                root,
-                "probePlayer"
-            )
-        } catch (e) {
-            var msg = "QtMultimedia: FAILED — " + e.toString()
-            overallStatus = msg
-            console.log("[AudioCompanion Probe] " + msg)
+            _cfg = Qt.createQmlObject('import QtCore\nSettings {\n' + body + '}', root, "cfg")
+            console.log("[AudioCompanion] Settings: QtCore OK → " + iniPath)
             return
+        } catch (e) {
+            console.log("[AudioCompanion] Settings: QtCore failed: " + e)
         }
 
-        if (!player) {
-            var msg2 = "QtMultimedia: FAILED — Qt.createQmlObject returned null"
-            overallStatus = msg2
-            console.log("[AudioCompanion Probe] " + msg2)
+        try {
+            _cfg = Qt.createQmlObject('import Qt.labs.settings\nSettings {\n' + body + '}', root, "cfg")
+            console.log("[AudioCompanion] Settings: Qt.labs.settings OK → " + iniPath)
             return
-        }
-
-        console.log("[AudioCompanion Probe] MediaPlayer instantiated successfully")
-        overallStatus = "QtMultimedia: OK — MediaPlayer created successfully"
-
-        var issues = []
-
-        // Attempt 2: set volume (Qt 6 uses AudioOutput, but MediaPlayer.audioOutput
-        // may still expose a volume shorthand depending on the Qt build)
-        try {
-            var ao = Qt.createQmlObject(
-                'import QtMultimedia; AudioOutput { volume: 0.5 }',
-                root,
-                "probeAudioOutput"
-            )
-            if (ao) {
-                player.audioOutput = ao
-                volumeStatus = "volume (AudioOutput): OK"
-                console.log("[AudioCompanion Probe] AudioOutput created and assigned")
-            } else {
-                volumeStatus = "volume (AudioOutput): null object"
-                issues.push("AudioOutput null")
-                console.log("[AudioCompanion Probe] AudioOutput: null object returned")
-            }
         } catch (e) {
-            volumeStatus = "volume (AudioOutput): FAILED — " + e.toString()
-            issues.push("AudioOutput failed")
-            console.log("[AudioCompanion Probe] AudioOutput error: " + e.toString())
+            console.log("[AudioCompanion] Settings: Qt.labs.settings failed: " + e)
         }
 
-        // Attempt 3: seek (position is read/write when source is set; without a
-        // source the call should still not throw if the API is present)
-        try {
-            player.position = 0
-            seekStatus = "seek (.position = 0): OK"
-            console.log("[AudioCompanion Probe] seek OK")
-        } catch (e) {
-            seekStatus = "seek (.position = 0): FAILED — " + e.toString()
-            issues.push("seek failed")
-            console.log("[AudioCompanion Probe] seek error: " + e.toString())
-        }
+        console.log("[AudioCompanion] Settings: UNAVAILABLE — values will not persist")
+    }
 
-        if (issues.length > 0) {
-            overallStatus = "QtMultimedia: PARTIAL — loaded but " + issues.join(", ")
-            console.log("[AudioCompanion Probe] PARTIAL: " + issues.join(", "))
+    // ── Runtime state ─────────────────────────────────────────────────────
+    property string filePath: ""
+    property string fileName: ""
+    property bool   isPlaying: false
+    property string statusText: "v" + version + " — Ready"
+    property string currentScoreKey: ""
+    property var    fileDialog: null
+
+    // ── Settings helpers ──────────────────────────────────────────────────
+
+    function scoreKey() {
+        if (!curScore) return ""
+        var p = curScore.path || ""
+        return p !== "" ? p : (curScore.scoreName || "")
+    }
+
+    function loadForScore() {
+        var key = scoreKey()
+        currentScoreKey = key
+        var path = ""
+        if (key !== "") {
+            try {
+                path = JSON.parse(_cfgGet("scoreFileMap", "{}"))[key] || ""
+            } catch (e) {}
+        }
+        path = path || _cfgGet("lastFilePath", "")
+        console.log("[AudioCompanion] loadForScore key=" + key + " path=" + path)
+        if (path !== "") {
+            root.filePath = path
+            root.fileName = path.split("/").pop()
+            root.statusText = "v" + version + " — " + root.fileName
         }
     }
 
-    Rectangle {
-        anchors.fill: parent
-        color: "#f5f5f5"
+    function saveFileForScore() {
+        _cfgSet("lastFilePath", root.filePath)
+        var key = scoreKey()
+        console.log("[AudioCompanion] saveFileForScore key=" + key + " path=" + root.filePath)
+        if (key === "") return
+        try {
+            var map = JSON.parse(_cfgGet("scoreFileMap", "{}"))
+            map[key] = root.filePath
+            _cfgSet("scoreFileMap", JSON.stringify(map))
+        } catch (e) {
+            var fresh = {}
+            fresh[key] = root.filePath
+            _cfgSet("scoreFileMap", JSON.stringify(fresh))
+        }
+    }
 
-        Column {
-            anchors {
-                top: parent.top
-                left: parent.left
-                right: parent.right
-                margins: 20
-            }
-            spacing: 12
+    // ── Lifecycle ─────────────────────────────────────────────────────────
 
-            Text {
-                text: "QtMultimedia Sandbox Probe"
-                font.pixelSize: 16
-                font.bold: true
-                color: "#222"
-            }
+    onRun: {
+        _initSettings()
 
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: "#ccc"
-            }
-
-            Text {
-                id: overallLabel
-                width: parent.width
-                wrapMode: Text.WordWrap
-                text: root.overallStatus
-                font.pixelSize: 13
-                color: root.overallStatus.indexOf("OK") !== -1 ? "#1a7a1a"
-                     : root.overallStatus.indexOf("PARTIAL") !== -1 ? "#a06000"
-                     : root.overallStatus.indexOf("FAILED") !== -1 ? "#c00000"
-                     : "#555"
-            }
-
-            Text {
-                id: volumeLabel
-                width: parent.width
-                wrapMode: Text.WordWrap
-                visible: root.volumeStatus !== ""
-                text: root.volumeStatus
-                font.pixelSize: 12
-                color: root.volumeStatus.indexOf("OK") !== -1 ? "#1a7a1a" : "#c00000"
-            }
-
-            Text {
-                id: seekLabel
-                width: parent.width
-                wrapMode: Text.WordWrap
-                visible: root.seekStatus !== ""
-                text: root.seekStatus
-                font.pixelSize: 12
-                color: root.seekStatus.indexOf("OK") !== -1 ? "#1a7a1a" : "#c00000"
-            }
-
-            Text {
-                width: parent.width
-                wrapMode: Text.WordWrap
-                text: "See MuseScore log for full details:\n~/snap/musescore/current/.local/share/MuseScore/MuseScore4/logs/"
-                font.pixelSize: 11
-                color: "#777"
-            }
+        try {
+            var dlg = Qt.createQmlObject(
+                'import Qt.labs.platform; FileDialog {' +
+                '  title: "Select Audio File";' +
+                '  nameFilters: ["Audio files (*.mp3 *.wav *.ogg *.flac)", "All files (*)"];' +
+                '}',
+                root, "fileDialog"
+            )
+            dlg.accepted.connect(function () {
+                var url = dlg.file.toString()
+                root.filePath = url.replace(/^file:\/\//, "")
+                root.fileName = url.split("/").pop()
+                root.statusText = "v" + version + " — " + root.fileName
+                saveFileForScore()
+                console.log("[AudioCompanion] File selected: " + root.filePath)
+            })
+            root.fileDialog = dlg
+            console.log("[AudioCompanion] FileDialog: OK")
+        } catch (e) {
+            console.log("[AudioCompanion] FileDialog unavailable, using text input: " + e)
+            root.statusText = "Paste a file path and press Enter"
+            fallbackRow.visible = true
         }
 
-        Button {
-            anchors {
-                bottom: parent.bottom
-                horizontalCenter: parent.horizontalCenter
-                bottomMargin: 16
+        loadForScore()
+    }
+
+    onScoreStateChanged: {
+        var key = scoreKey()
+        if (key !== currentScoreKey) {
+            if (isPlaying) isPlaying = false
+            loadForScore()
+        }
+    }
+
+    // ── UI ────────────────────────────────────────────────────────────────
+
+    SystemPalette { id: pal; colorGroup: SystemPalette.Active }
+
+    Rectangle {
+        anchors.fill: parent
+        color: pal.window
+
+        Column {
+            anchors { fill: parent; margins: 10 }
+            spacing: 6
+
+            // ── Row 1: file selector ──────────────────────────────────────
+            Row {
+                id: fileRow
+                width: parent.width
+                spacing: 8
+
+                Button {
+                    id: loadBtn
+                    text: root.fileName !== "" ? "Change…" : "Load Audio…"
+                    implicitHeight: 28
+                    onClicked: {
+                        if (root.fileDialog) {
+                            root.fileDialog.open()
+                        } else {
+                            fallbackRow.visible = !fallbackRow.visible
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.fileName !== "" ? root.fileName : "No file loaded"
+                    color: root.fileName !== "" ? pal.text : pal.mid
+                    font.pixelSize: 12
+                    elide: Text.ElideMiddle
+                    width: fileRow.width - loadBtn.width - 8
+                    anchors.verticalCenter: parent.verticalCenter
+                }
             }
-            text: "Close"
-            onClicked: quit()
+
+            // ── Fallback: text input when FileDialog is unavailable ───────
+            Row {
+                id: fallbackRow
+                visible: false
+                width: parent.width
+                spacing: 6
+
+                TextField {
+                    id: pathField
+                    placeholderText: "Paste full audio file path…"
+                    width: parent.width - okBtn.width - 6
+                    implicitHeight: 28
+                    onAccepted: okBtn.clicked()
+                }
+                Button {
+                    id: okBtn
+                    text: "OK"
+                    implicitHeight: 28
+                    onClicked: {
+                        var p = pathField.text.trim()
+                        if (p === "") return
+                        root.filePath = p
+                        root.fileName = p.split("/").pop()
+                        root.statusText = "v" + version + " — " + root.fileName
+                        saveFileForScore()
+                        fallbackRow.visible = false
+                        pathField.text = ""
+                    }
+                }
+            }
+
+            // ── Row 2: transport + volume + offset ────────────────────────
+            Row {
+                width: parent.width
+                spacing: 0
+
+                Row {
+                    spacing: 4
+
+                    Button {
+                        text: "⏮"
+                        implicitWidth: 38; implicitHeight: 32
+                        onClicked: {}  // milestone 5
+                    }
+                    Button {
+                        text: root.isPlaying ? "⏸" : "▶"
+                        implicitWidth: 38; implicitHeight: 32
+                        enabled: root.filePath !== ""
+                        onClicked: root.isPlaying = !root.isPlaying  // milestone 3
+                    }
+                    Button {
+                        text: "⏹"
+                        implicitWidth: 38; implicitHeight: 32
+                        onClicked: root.isPlaying = false  // milestone 3
+                    }
+                }
+
+                Item { width: 12; height: 1 }
+
+                Row {
+                    id: volRow
+                    spacing: 5
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Text {
+                        text: "Vol"
+                        color: pal.text; font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Slider {
+                        id: volSlider
+                        from: 0.0; to: 1.0
+                        value: _cfg ? _cfg.volume : 1.0
+                        implicitWidth: 90; implicitHeight: 32
+                        onMoved: _cfgSet("volume", value)
+                    }
+                    Text {
+                        text: Math.round(volSlider.value * 100) + "%"
+                        color: pal.text; font.pixelSize: 12; width: 30
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                Item { width: 12; height: 1 }
+
+                Row {
+                    id: offsetRow
+                    spacing: 5
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Text {
+                        text: "Offset"
+                        color: pal.text; font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    SpinBox {
+                        id: offsetSpin
+                        from: -10000; to: 10000
+                        value: _cfg ? _cfg.delayMs : 0
+                        stepSize: 10
+                        implicitWidth: 96; implicitHeight: 32
+                        onValueModified: _cfgSet("delayMs", value)
+                        textFromValue: function (v) { return (v >= 0 ? "+" : "") + v }
+                        valueFromText: function (t) { return parseInt(t) || 0 }
+                    }
+                    Text {
+                        text: "ms"
+                        color: pal.text; font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                Item { width: 10; height: 1 }
+
+                Text {
+                    text: root.statusText
+                    color: pal.mid; font.pixelSize: 11
+                    elide: Text.ElideRight
+                    width: parent.width - 38*3 - 4*2 - 12
+                           - (volRow.width + 12)
+                           - (offsetRow.width + 10)
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
         }
     }
 }
