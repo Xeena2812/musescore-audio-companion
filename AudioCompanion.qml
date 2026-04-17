@@ -10,7 +10,7 @@ MuseScore {
     version: "1.0.0"
     pluginType: "dialog"
     width: 460
-    height: 144
+    height: 176
 
     // ── Persistent settings ───────────────────────────────────────────────
     // QSettings default path is blocked by the snap sandbox (AccessError).
@@ -96,6 +96,10 @@ MuseScore {
         root.vlcConnected = true
         root.vlcState     = s
         root.isPlaying    = (s === "playing")
+        var tm = xml.match(/<time>(\d+)<\/time>/)
+        var lm = xml.match(/<length>(\d+)<\/length>/)
+        if (tm) root.vlcPosition = parseInt(tm[1])
+        if (lm) root.vlcLength   = parseInt(lm[1])
         if (s === "playing")
             root.statusText = "▶  " + root.fileName
         else if (s === "paused")
@@ -184,6 +188,19 @@ MuseScore {
     property string currentScoreKey: ""
     property var    fileDialog: null
     property string _delayTarget: ""   // "vlc" | "score" | ""
+    property int    vlcPosition: 0     // seconds, updated by poll
+    property int    vlcLength: 0       // seconds, updated by poll
+
+    function _fmtTime(s) {
+        var m = Math.floor(s / 60)
+        var sec = Math.floor(s % 60)
+        return m + ":" + (sec < 10 ? "0" : "") + sec
+    }
+
+    function vlcSkip(deltaS) {
+        var target = Math.max(0, Math.min(root.vlcLength, root.vlcPosition + deltaS))
+        vlcSeek(target * 1000)
+    }
 
     // ── Settings helpers ──────────────────────────────────────────────────
 
@@ -370,42 +387,87 @@ MuseScore {
                 }
             }
 
-            // ── Row 2: transport + volume + offset ────────────────────────
+            // ── Row 2: progress bar ───────────────────────────────────────
+            Row {
+                width: parent.width
+                spacing: 6
+
+                Slider {
+                    id: progressSlider
+                    from: 0; to: Math.max(1, root.vlcLength)
+                    value: progressSlider.pressed ? progressSlider.value : root.vlcPosition
+                    enabled: root.vlcConnected && root.vlcLength > 0
+                    width: parent.width - timeLabel.width - 6
+                    implicitHeight: 22
+                    onMoved: root.vlcSeek(progressSlider.value * 1000)
+                }
+                Text {
+                    id: timeLabel
+                    text: root._fmtTime(root.vlcPosition) + " / " + root._fmtTime(root.vlcLength)
+                    color: pal.text; font.pixelSize: 11; width: 72
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            // ── Row 3: transport + skip buttons ───────────────────────────
+            Row {
+                spacing: 3
+
+                Button {
+                    text: "⏮"
+                    implicitWidth: 30; implicitHeight: 28
+                    enabled: root.vlcConnected && root.filePath !== ""
+                    onClicked: root.transportRewind()
+                }
+                Button {
+                    text: "−10s"
+                    implicitWidth: 40; implicitHeight: 28
+                    enabled: root.vlcConnected && root.filePath !== ""
+                    onClicked: root.vlcSkip(-10)
+                }
+                Button {
+                    text: "−3s"
+                    implicitWidth: 36; implicitHeight: 28
+                    enabled: root.vlcConnected && root.filePath !== ""
+                    onClicked: root.vlcSkip(-3)
+                }
+                Button {
+                    text: root.isPlaying ? "⏸" : "▶"
+                    implicitWidth: 36; implicitHeight: 28
+                    enabled: root.vlcConnected && root.filePath !== ""
+                    onClicked: {
+                        if (root.vlcState === "stopped") root.transportPlay()
+                        else root.transportPause()
+                    }
+                }
+                Button {
+                    text: "+3s"
+                    implicitWidth: 36; implicitHeight: 28
+                    enabled: root.vlcConnected && root.filePath !== ""
+                    onClicked: root.vlcSkip(3)
+                }
+                Button {
+                    text: "+10s"
+                    implicitWidth: 40; implicitHeight: 28
+                    enabled: root.vlcConnected && root.filePath !== ""
+                    onClicked: root.vlcSkip(10)
+                }
+                Button {
+                    text: "⏹"
+                    implicitWidth: 30; implicitHeight: 28
+                    enabled: root.vlcConnected
+                    onClicked: root.transportStop()
+                }
+            }
+
+            // ── Row 4: volume + offset ────────────────────────────────────
             Row {
                 width: parent.width
                 spacing: 0
 
                 Row {
-                    spacing: 4
-
-                    Button {
-                        text: "⏮"
-                        implicitWidth: 38; implicitHeight: 32
-                        enabled: root.vlcConnected && root.filePath !== ""
-                        onClicked: root.transportRewind()
-                    }
-                    Button {
-                        text: root.isPlaying ? "⏸" : "▶"
-                        implicitWidth: 38; implicitHeight: 32
-                        enabled: root.vlcConnected && root.filePath !== ""
-                        onClicked: {
-                            if (root.vlcState === "stopped") root.transportPlay()
-                            else root.transportPause()
-                        }
-                    }
-                    Button {
-                        text: "⏹"
-                        implicitWidth: 38; implicitHeight: 32
-                        enabled: root.vlcConnected
-                        onClicked: root.transportStop()
-                    }
-                }
-
-                Item { width: 12; height: 1 }
-
-                Row {
                     id: volRow
-                    spacing: 5
+                    spacing: 4
                     anchors.verticalCenter: parent.verticalCenter
 
                     Text {
@@ -417,7 +479,7 @@ MuseScore {
                         id: volSlider
                         from: 0.0; to: 1.0
                         value: _cfg ? _cfg.volume : 1.0
-                        implicitWidth: 90; implicitHeight: 32
+                        implicitWidth: 90; implicitHeight: 28
                         onMoved: {
                             _cfgSet("volume", value)
                             root.vlcVolume(value)
@@ -434,7 +496,7 @@ MuseScore {
 
                 Row {
                     id: offsetRow
-                    spacing: 5
+                    spacing: 4
                     anchors.verticalCenter: parent.verticalCenter
 
                     Text {
@@ -447,7 +509,7 @@ MuseScore {
                         from: -10000; to: 10000
                         value: _cfg ? _cfg.delayMs : 0
                         stepSize: 10
-                        implicitWidth: 96; implicitHeight: 32
+                        implicitWidth: 96; implicitHeight: 28
                         onValueModified: _cfgSet("delayMs", value)
                         textFromValue: function (v) { return (v >= 0 ? "+" : "") + v }
                         valueFromText: function (t) { return parseInt(t) || 0 }
@@ -460,7 +522,7 @@ MuseScore {
                 }
             }
 
-            // ── Row 3: status ─────────────────────────────────────────────
+            // ── Row 5: status ─────────────────────────────────────────────
             Text {
                 width: parent.width
                 text: root.statusText
