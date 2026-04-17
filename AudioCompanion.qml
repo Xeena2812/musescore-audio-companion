@@ -2,12 +2,12 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.9.1
+// v1.0.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.9.1"
+    version: "1.0.0"
     pluginType: "dialog"
     width: 460
     height: 144
@@ -134,6 +134,48 @@ MuseScore {
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
+    // ── Dual transport ────────────────────────────────────────────────────
+    // transportPlay: start both engines, staggered by delayMs.
+    //   delayMs > 0 → score first, VLC after delayMs
+    //   delayMs < 0 → VLC first, score after |delayMs|
+    //   delayMs = 0 → simultaneous
+    function transportPlay() {
+        if (root.filePath === "") return
+        var delay = _cfgGet("delayMs", 0)
+        if (delay >= 0) {
+            cmd("play")
+            if (delay > 0) {
+                _delayTarget = "vlc"
+                delayTimer.interval = delay
+                delayTimer.restart()
+            } else {
+                vlcPlay()
+            }
+        } else {
+            vlcPlay()
+            _delayTarget = "score"
+            delayTimer.interval = -delay
+            delayTimer.restart()
+        }
+    }
+
+    function transportPause() {
+        cmd("play")          // MU4: toggles play↔pause
+        vlcTogglePause()
+        delayTimer.stop()
+    }
+
+    function transportStop() {
+        cmd("stop")
+        vlcStop()
+        delayTimer.stop()
+    }
+
+    function transportRewind() {
+        cmd("rewind")
+        vlcSeek(0)
+    }
+
     // ── Runtime state ─────────────────────────────────────────────────────
     property string filePath: ""
     property string fileName: ""
@@ -141,6 +183,7 @@ MuseScore {
     property string statusText: "v" + version + " — Ready"
     property string currentScoreKey: ""
     property var    fileDialog: null
+    property string _delayTarget: ""   // "vlc" | "score" | ""
 
     // ── Settings helpers ──────────────────────────────────────────────────
 
@@ -219,12 +262,23 @@ MuseScore {
     onScoreStateChanged: {
         var key = scoreKey()
         if (key !== currentScoreKey) {
-            vlcStop()
+            transportStop()
             loadForScore()
         }
     }
 
     // ── UI ────────────────────────────────────────────────────────────────
+
+    // Fires the delayed half of a staggered dual-engine start.
+    Timer {
+        id: delayTimer
+        repeat: false
+        onTriggered: {
+            if (root._delayTarget === "vlc")   root.vlcPlay()
+            else if (root._delayTarget === "score") cmd("play")
+            root._delayTarget = ""
+        }
+    }
 
     // Poll VLC every second to track playback state and detect when it stops.
     Timer {
@@ -328,22 +382,22 @@ MuseScore {
                         text: "⏮"
                         implicitWidth: 38; implicitHeight: 32
                         enabled: root.vlcConnected && root.filePath !== ""
-                        onClicked: root.vlcSeek(0)
+                        onClicked: root.transportRewind()
                     }
                     Button {
                         text: root.isPlaying ? "⏸" : "▶"
                         implicitWidth: 38; implicitHeight: 32
                         enabled: root.vlcConnected && root.filePath !== ""
                         onClicked: {
-                            if (root.vlcState === "stopped") root.vlcPlay()
-                            else root.vlcTogglePause()
+                            if (root.vlcState === "stopped") root.transportPlay()
+                            else root.transportPause()
                         }
                     }
                     Button {
                         text: "⏹"
                         implicitWidth: 38; implicitHeight: 32
                         enabled: root.vlcConnected
-                        onClicked: root.vlcStop()
+                        onClicked: root.transportStop()
                     }
                 }
 
