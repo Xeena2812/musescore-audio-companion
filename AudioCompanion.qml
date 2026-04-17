@@ -2,12 +2,12 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.5.0
+// v0.6.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.5.0"
+    version: "0.6.0"
     pluginType: "dock"
     dockArea: "bottom"
     width: 460
@@ -60,47 +60,70 @@ MuseScore {
         console.log("[AudioCompanion] Settings: UNAVAILABLE — values will not persist")
     }
 
-    // ── Audio engine ──────────────────────────────────────────────────────
-    property var _player: null
-    property var _audioOut: null
+    // ── VLC HTTP bridge ───────────────────────────────────────────────────
+    // QMediaPlayer has no backend in the snap sandbox. Instead we talk to
+    // a headless VLC instance over its HTTP remote-control API (port 9090).
+    // Start VLC with: ./start-vlc-server.sh  (in this repo)
+    property string _vlcBase: "http://127.0.0.1:9090"
+    property bool   vlcConnected: false
+    property string vlcState: "stopped"    // "stopped" | "playing" | "paused"
 
-    function _initAudio() {
-        try {
-            var ao = Qt.createQmlObject('import QtMultimedia; AudioOutput {}', root, "audioOut")
-            var mp = Qt.createQmlObject('import QtMultimedia; MediaPlayer { autoPlay: false }', root, "player")
-            mp.audioOutput = ao
-            ao.volume = _cfgGet("volume", 1.0)
-
-            // Sync isPlaying and statusText from actual playback state
-            mp.playbackStateChanged.connect(function () {
-                var playing = (mp.playbackState === 1)  // MediaPlayer.PlayingState
-                root.isPlaying = playing
-                if (playing) {
-                    root.statusText = "▶  " + root.fileName
-                } else if (mp.playbackState === 2) {    // PausedState
-                    root.statusText = "⏸  " + root.fileName
-                } else {
-                    root.statusText = "v" + version + " — " + (root.fileName || "Ready")
-                }
-            })
-
-            mp.errorOccurred.connect(function (error, errorString) {
-                root.statusText = "Error: " + errorString
-                root.isPlaying = false
-                console.log("[AudioCompanion] MediaPlayer error " + error + ": " + errorString)
-            })
-
-            root._player   = mp
-            root._audioOut = ao
-            console.log("[AudioCompanion] Audio engine: OK")
-        } catch (e) {
-            console.log("[AudioCompanion] Audio engine failed: " + e)
+    // Fire-and-forget GET; cb(ok, responseText)
+    function _vlcGet(query, cb) {
+        var xhr = new XMLHttpRequest()
+        var url = _vlcBase + "/requests/status.xml" + (query ? "?" + query : "")
+        xhr.open("GET", url, true)
+        xhr.timeout = 1500
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) return
+            if (cb) cb(xhr.status === 200, xhr.responseText)
         }
+        xhr.send()
     }
 
-    function _applySource() {
-        if (!_player || filePath === "") return
-        _player.source = "file://" + filePath
+    function _parseVlc(xml) {
+        var m = xml.match(/<state>(\w+)<\/state>/)
+        if (!m) return
+        var s = m[1]                           // "playing" | "paused" | "stopped"
+        root.vlcConnected = true
+        root.vlcState     = s
+        root.isPlaying    = (s === "playing")
+        if (s === "playing")
+            root.statusText = "▶  " + root.fileName
+        else if (s === "paused")
+            root.statusText = "⏸  " + root.fileName
+        else
+            root.statusText = "v" + version + " — " + (root.fileName || "Ready")
+    }
+
+    function vlcPlay() {
+        if (filePath === "") return
+        var input = encodeURIComponent("file://" + filePath)
+        _vlcGet("command=in_play&input=" + input, function (ok, xml) {
+            if (ok) _parseVlc(xml)
+            else root.statusText = "VLC not responding"
+        })
+    }
+
+    function vlcTogglePause() {
+        _vlcGet("command=pl_pause", function (ok, xml) { if (ok) _parseVlc(xml) })
+    }
+
+    function vlcStop() {
+        _vlcGet("command=pl_stop", function (ok, xml) {
+            if (ok) _parseVlc(xml)
+            root.isPlaying = false
+        })
+    }
+
+    function vlcSeek(ms) {
+        _vlcGet("command=seek&val=" + Math.round(ms / 1000) + "s",
+                function (ok, xml) { if (ok) _parseVlc(xml) })
+    }
+
+    function vlcVolume(v) {   // v: 0.0–1.0 → VLC 0–512 (256 = 100 %)
+        _vlcGet("command=volume&val=" + Math.round(v * 256),
+                function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
     // ── Runtime state ─────────────────────────────────────────────────────
@@ -110,11 +133,6 @@ MuseScore {
     property string statusText: "v" + version + " — Ready"
     property string currentScoreKey: ""
     property var    fileDialog: null
-
-    onFilePathChanged: {
-        _applySource()
-        if (_player) _player.stop()
-    }
 
     // ── Settings helpers ──────────────────────────────────────────────────
 
@@ -162,7 +180,6 @@ MuseScore {
 
     onRun: {
         _initSettings()
-        _initAudio()
 
         try {
             var dlg = Qt.createQmlObject(
@@ -194,12 +211,31 @@ MuseScore {
     onScoreStateChanged: {
         var key = scoreKey()
         if (key !== currentScoreKey) {
-            if (_player) _player.stop()
+            vlcStop()
             loadForScore()
         }
     }
 
     // ── UI ────────────────────────────────────────────────────────────────
+
+    // Poll VLC every second to track playback state and detect when it stops.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: true
+        onTriggered: {
+            root._vlcGet("", function (ok, xml) {
+                if (ok) {
+                    root._parseVlc(xml)
+                } else if (root.vlcConnected) {
+                    root.vlcConnected = false
+                    root.vlcState     = "stopped"
+                    root.isPlaying    = false
+                    root.statusText   = "v" + root.version + " — VLC not running"
+                }
+            })
+        }
+    }
 
     SystemPalette { id: pal; colorGroup: SystemPalette.Active }
 
@@ -282,24 +318,23 @@ MuseScore {
                     Button {
                         text: "⏮"
                         implicitWidth: 38; implicitHeight: 32
-                        enabled: root.filePath !== ""
-                        onClicked: { if (root._player) root._player.position = 0 }
+                        enabled: root.vlcConnected && root.filePath !== ""
+                        onClicked: root.vlcSeek(0)
                     }
                     Button {
                         text: root.isPlaying ? "⏸" : "▶"
                         implicitWidth: 38; implicitHeight: 32
-                        enabled: root.filePath !== ""
+                        enabled: root.vlcConnected && root.filePath !== ""
                         onClicked: {
-                            if (!root._player) return
-                            if (root._player.playbackState === 1) root._player.pause()
-                            else root._player.play()
+                            if (root.vlcState === "stopped") root.vlcPlay()
+                            else root.vlcTogglePause()
                         }
                     }
                     Button {
                         text: "⏹"
                         implicitWidth: 38; implicitHeight: 32
-                        enabled: root.filePath !== ""
-                        onClicked: { if (root._player) root._player.stop() }
+                        enabled: root.vlcConnected
+                        onClicked: root.vlcStop()
                     }
                 }
 
@@ -322,7 +357,7 @@ MuseScore {
                         implicitWidth: 90; implicitHeight: 32
                         onMoved: {
                             _cfgSet("volume", value)
-                            if (root._audioOut) root._audioOut.volume = value
+                            root.vlcVolume(value)
                         }
                     }
                     Text {
