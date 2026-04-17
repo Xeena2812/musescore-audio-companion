@@ -2,12 +2,12 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.4.0
+// v0.5.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.4.0"
+    version: "0.5.0"
     pluginType: "dock"
     dockArea: "bottom"
     width: 460
@@ -60,6 +60,49 @@ MuseScore {
         console.log("[AudioCompanion] Settings: UNAVAILABLE — values will not persist")
     }
 
+    // ── Audio engine ──────────────────────────────────────────────────────
+    property var _player: null
+    property var _audioOut: null
+
+    function _initAudio() {
+        try {
+            var ao = Qt.createQmlObject('import QtMultimedia; AudioOutput {}', root, "audioOut")
+            var mp = Qt.createQmlObject('import QtMultimedia; MediaPlayer { autoPlay: false }', root, "player")
+            mp.audioOutput = ao
+            ao.volume = _cfgGet("volume", 1.0)
+
+            // Sync isPlaying and statusText from actual playback state
+            mp.playbackStateChanged.connect(function () {
+                var playing = (mp.playbackState === 1)  // MediaPlayer.PlayingState
+                root.isPlaying = playing
+                if (playing) {
+                    root.statusText = "▶  " + root.fileName
+                } else if (mp.playbackState === 2) {    // PausedState
+                    root.statusText = "⏸  " + root.fileName
+                } else {
+                    root.statusText = "v" + version + " — " + (root.fileName || "Ready")
+                }
+            })
+
+            mp.errorOccurred.connect(function (error, errorString) {
+                root.statusText = "Error: " + errorString
+                root.isPlaying = false
+                console.log("[AudioCompanion] MediaPlayer error " + error + ": " + errorString)
+            })
+
+            root._player   = mp
+            root._audioOut = ao
+            console.log("[AudioCompanion] Audio engine: OK")
+        } catch (e) {
+            console.log("[AudioCompanion] Audio engine failed: " + e)
+        }
+    }
+
+    function _applySource() {
+        if (!_player || filePath === "") return
+        _player.source = "file://" + filePath
+    }
+
     // ── Runtime state ─────────────────────────────────────────────────────
     property string filePath: ""
     property string fileName: ""
@@ -67,6 +110,11 @@ MuseScore {
     property string statusText: "v" + version + " — Ready"
     property string currentScoreKey: ""
     property var    fileDialog: null
+
+    onFilePathChanged: {
+        _applySource()
+        if (_player) _player.stop()
+    }
 
     // ── Settings helpers ──────────────────────────────────────────────────
 
@@ -114,6 +162,7 @@ MuseScore {
 
     onRun: {
         _initSettings()
+        _initAudio()
 
         try {
             var dlg = Qt.createQmlObject(
@@ -145,7 +194,7 @@ MuseScore {
     onScoreStateChanged: {
         var key = scoreKey()
         if (key !== currentScoreKey) {
-            if (isPlaying) isPlaying = false
+            if (_player) _player.stop()
             loadForScore()
         }
     }
@@ -233,18 +282,24 @@ MuseScore {
                     Button {
                         text: "⏮"
                         implicitWidth: 38; implicitHeight: 32
-                        onClicked: {}  // milestone 5
+                        enabled: root.filePath !== ""
+                        onClicked: { if (root._player) root._player.position = 0 }
                     }
                     Button {
                         text: root.isPlaying ? "⏸" : "▶"
                         implicitWidth: 38; implicitHeight: 32
                         enabled: root.filePath !== ""
-                        onClicked: root.isPlaying = !root.isPlaying  // milestone 3
+                        onClicked: {
+                            if (!root._player) return
+                            if (root._player.playbackState === 1) root._player.pause()
+                            else root._player.play()
+                        }
                     }
                     Button {
                         text: "⏹"
                         implicitWidth: 38; implicitHeight: 32
-                        onClicked: root.isPlaying = false  // milestone 3
+                        enabled: root.filePath !== ""
+                        onClicked: { if (root._player) root._player.stop() }
                     }
                 }
 
@@ -265,7 +320,10 @@ MuseScore {
                         from: 0.0; to: 1.0
                         value: _cfg ? _cfg.volume : 1.0
                         implicitWidth: 90; implicitHeight: 32
-                        onMoved: _cfgSet("volume", value)
+                        onMoved: {
+                            _cfgSet("volume", value)
+                            if (root._audioOut) root._audioOut.volume = value
+                        }
                     }
                     Text {
                         text: Math.round(volSlider.value * 100) + "%"
