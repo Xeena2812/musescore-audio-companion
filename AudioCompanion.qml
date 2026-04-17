@@ -398,8 +398,6 @@ MuseScore {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                 }
-
-                }
             }
 
             // ── Row 3: status ─────────────────────────────────────────────
