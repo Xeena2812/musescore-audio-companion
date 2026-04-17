@@ -2,16 +2,16 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.6.0
+// v0.7.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.6.0"
+    version: "0.7.0"
     pluginType: "dock"
     dockArea: "bottom"
     width: 460
-    implicitHeight: 122
+    implicitHeight: 140
 
     // ── Persistent settings ───────────────────────────────────────────────
     // QSettings default path is blocked by the snap sandbox (AccessError).
@@ -64,7 +64,9 @@ MuseScore {
     // QMediaPlayer has no backend in the snap sandbox. Instead we talk to
     // a headless VLC instance over its HTTP remote-control API (port 9090).
     // Start VLC with: ./start-vlc-server.sh  (in this repo)
+    // VLC 3.x requires a non-empty password; default matches the script.
     property string _vlcBase: "http://127.0.0.1:9090"
+    property string _vlcPass: "musescore"
     property bool   vlcConnected: false
     property string vlcState: "stopped"    // "stopped" | "playing" | "paused"
 
@@ -74,6 +76,8 @@ MuseScore {
         var url = _vlcBase + "/requests/status.xml" + (query ? "?" + query : "")
         xhr.open("GET", url, true)
         xhr.timeout = 1500
+        // VLC 3 Basic auth: user="" password=_vlcPass
+        xhr.setRequestHeader("Authorization", "Basic " + btoa(":" + _vlcPass))
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) return
             if (cb) cb(xhr.status === 200, xhr.responseText)
@@ -396,17 +400,16 @@ MuseScore {
                     }
                 }
 
-                Item { width: 10; height: 1 }
-
-                Text {
-                    text: root.statusText
-                    color: pal.mid; font.pixelSize: 11
-                    elide: Text.ElideRight
-                    width: parent.width - 38*3 - 4*2 - 12
-                           - (volRow.width + 12)
-                           - (offsetRow.width + 10)
-                    anchors.verticalCenter: parent.verticalCenter
                 }
+            }
+
+            // ── Row 3: status ─────────────────────────────────────────────
+            Text {
+                width: parent.width
+                text: root.statusText
+                color: root.vlcConnected ? pal.mid : "#c07000"
+                font.pixelSize: 11
+                elide: Text.ElideRight
             }
         }
     }
