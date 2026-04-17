@@ -2,16 +2,15 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.7.0
+// v0.8.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.7.0"
-    pluginType: "dock"
-    dockArea: "bottom"
+    version: "0.8.0"
+    pluginType: "dialog"
     width: 460
-    implicitHeight: 140
+    height: 144
 
     // ── Persistent settings ───────────────────────────────────────────────
     // QSettings default path is blocked by the snap sandbox (AccessError).
@@ -248,7 +247,7 @@ MuseScore {
         color: pal.window
 
         Column {
-            anchors { fill: parent; margins: 10 }
+            anchors { top: parent.top; left: parent.left; right: parent.right; margins: 10 }
             spacing: 6
 
             // ── Row 1: file selector ──────────────────────────────────────
