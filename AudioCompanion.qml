@@ -2,12 +2,12 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v0.8.0
+// v0.9.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "0.8.0"
+    version: "0.9.0"
     pluginType: "dialog"
     width: 460
     height: 144
@@ -76,7 +76,12 @@ MuseScore {
         xhr.open("GET", url, true)
         xhr.timeout = 1500
         // VLC 3 Basic auth: user="" password=_vlcPass
-        xhr.setRequestHeader("Authorization", "Basic " + btoa(":" + _vlcPass))
+        // btoa may not be available in all MU4 JS engine versions;
+        // fall back to pre-computed value for the default password.
+        var encoded = (typeof btoa === "function")
+            ? btoa(":" + _vlcPass)
+            : "Om11c2VzY29yZQ=="  // btoa(":musescore")
+        xhr.setRequestHeader("Authorization", "Basic " + encoded)
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) return
             if (cb) cb(xhr.status === 200, xhr.responseText)
