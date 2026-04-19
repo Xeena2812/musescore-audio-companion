@@ -190,6 +190,8 @@ MuseScore {
     property string _delayTarget: ""   // "vlc" | "score" | ""
     property int    vlcPosition: 0     // seconds, updated by poll
     property int    vlcLength: 0       // seconds, updated by poll
+    property bool   _vlcLaunched: false
+    property int    _vlcPollFail: 0
 
     function _fmtTime(s) {
         var m = Math.floor(s / 60)
@@ -200,6 +202,13 @@ MuseScore {
     function vlcSkip(deltaS) {
         var target = Math.max(0, Math.min(root.vlcLength, root.vlcPosition + deltaS))
         vlcSeek(target * 1000)
+    }
+
+    function _tryLaunchVlc() {
+        Qt.openUrlExternally(Qt.resolvedUrl("start-vlc-server.sh").toString())
+        _vlcLaunched = true
+        _vlcPollFail = 0
+        root.statusText = "Starting VLC…"
     }
 
     // ── Settings helpers ──────────────────────────────────────────────────
@@ -274,7 +283,12 @@ MuseScore {
         }
 
         loadForScore()
+        _vlcGet("", function(ok, xml) {
+            if (ok) { _parseVlc(xml) } else { _tryLaunchVlc() }
+        })
     }
+
+    Component.onDestruction: root.vlcStop()
 
     onScoreStateChanged: {
         var key = scoreKey()
@@ -305,13 +319,21 @@ MuseScore {
         onTriggered: {
             root._vlcGet("", function (ok, xml, httpStatus) {
                 if (ok) {
+                    root._vlcLaunched = false
+                    root._vlcPollFail = 0
                     root._parseVlc(xml)
                 } else {
                     root.vlcConnected = false
                     root.vlcState     = "stopped"
                     root.isPlaying    = false
-                    // httpStatus 0 = network unreachable; 401 = bad auth; 404 = wrong URL
-                    root.statusText   = "VLC: HTTP " + httpStatus + " — start-vlc-server.sh?"
+                    if (root._vlcLaunched && root._vlcPollFail < 5) {
+                        root._vlcPollFail++
+                        root.statusText = "Starting VLC…"
+                    } else {
+                        root._vlcLaunched = false
+                        // httpStatus 0 = network unreachable; 401 = bad auth; 404 = wrong URL
+                        root.statusText = "VLC not running — ./start-vlc-server.sh"
+                    }
                 }
             })
         }
