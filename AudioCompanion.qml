@@ -2,20 +2,17 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v1.0.0
+// v1.2.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "1.0.0"
+    version: "1.2.0"
     pluginType: "dialog"
     width: 460
     height: 176
 
     // ── Persistent settings ───────────────────────────────────────────────
-    // QSettings default path is blocked by the snap sandbox (AccessError).
-    // Fix: supply an explicit fileName inside the plugins folder, which the
-    // snap can always write to. Probe QtCore (Qt 6) then Qt.labs.settings.
     property var _cfg: null
 
     function _cfgGet(key, def) {
@@ -30,8 +27,6 @@ MuseScore {
     }
 
     function _initSettings() {
-        // Qt.resolvedUrl resolves relative to this QML file, so the INI lands
-        // next to AudioCompanion.qml — a path the snap sandbox can write to.
         var iniPath = Qt.resolvedUrl("audio-companion.ini").toString().replace(/^file:\/\//, "")
         var body =
             'fileName: "' + iniPath + '"\n' +
@@ -60,27 +55,19 @@ MuseScore {
     }
 
     // ── VLC HTTP bridge ───────────────────────────────────────────────────
-    // QMediaPlayer has no backend in the snap sandbox. Instead we talk to
-    // a headless VLC instance over its HTTP remote-control API (port 9090).
-    // Start VLC with: ./start-vlc-server.sh  (in this repo)
-    // VLC 3.x requires a non-empty password; default matches the script.
     property string _vlcBase: "http://127.0.0.1:9090"
     property string _vlcPass: "musescore"
     property bool   vlcConnected: false
     property string vlcState: "stopped"    // "stopped" | "playing" | "paused"
 
-    // Fire-and-forget GET; cb(ok, responseText, httpStatus)
     function _vlcGet(query, cb) {
         var xhr = new XMLHttpRequest()
         var url = _vlcBase + "/requests/status.xml" + (query ? "?" + query : "")
         xhr.open("GET", url, true)
         xhr.timeout = 1500
-        // VLC 3 Basic auth: user="" password=_vlcPass
-        // btoa may not be available in all MU4 JS engine versions;
-        // fall back to pre-computed value for the default password.
         var encoded = (typeof btoa === "function")
             ? btoa(":" + _vlcPass)
-            : "Om11c2VzY29yZQ=="  // btoa(":musescore")
+            : "Om11c2VzY29yZQ=="
         xhr.setRequestHeader("Authorization", "Basic " + encoded)
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) return
@@ -92,7 +79,7 @@ MuseScore {
     function _parseVlc(xml) {
         var m = xml.match(/<state>(\w+)<\/state>/)
         if (!m) return
-        var s = m[1]                           // "playing" | "paused" | "stopped"
+        var s = m[1]
         root.vlcConnected = true
         root.vlcState     = s
         root.isPlaying    = (s === "playing")
@@ -133,63 +120,83 @@ MuseScore {
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
-    function vlcVolume(v) {   // v: 0.0–1.0 → VLC 0–512 (256 = 100 %)
+    function vlcVolume(v) {
         _vlcGet("command=volume&val=" + Math.round(v * 256),
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
+    // ── Play mode ─────────────────────────────────────────────────────────
+    // "both" | "audio" | "score"
+    property string playMode: "both"
+
     // ── Dual transport ────────────────────────────────────────────────────
-    // transportPlay: start both engines, staggered by delayMs.
-    //   delayMs > 0 → score first, VLC after delayMs
-    //   delayMs < 0 → VLC first, score after |delayMs|
-    //   delayMs = 0 → simultaneous
     function transportPlay() {
-        if (root.filePath === "") return
+        var scoreEnabled = (playMode !== "audio")
+        var audioEnabled = (playMode !== "score")
+
+        // If audio is wanted but no file is loaded, fall back to score-only.
+        if (audioEnabled && root.filePath === "") {
+            if (!scoreEnabled) return
+            audioEnabled = false
+        }
+
+        if (scoreEnabled) root._scoreIsPlaying = true
+
         var delay = _cfgGet("delayMs", 0)
-        if (delay >= 0) {
-            cmd("play")
-            if (delay > 0) {
-                _delayTarget = "vlc"
-                delayTimer.interval = delay
-                delayTimer.restart()
+        if (scoreEnabled && audioEnabled) {
+            if (delay >= 0) {
+                cmd("play")
+                if (delay > 0) {
+                    _delayTarget = "vlc"
+                    delayTimer.interval = delay
+                    delayTimer.restart()
+                } else {
+                    vlcPlay()
+                }
             } else {
                 vlcPlay()
+                _delayTarget = "score"
+                delayTimer.interval = -delay
+                delayTimer.restart()
             }
+        } else if (scoreEnabled) {
+            cmd("play")
         } else {
             vlcPlay()
-            _delayTarget = "score"
-            delayTimer.interval = -delay
-            delayTimer.restart()
         }
     }
 
     function transportPause() {
-        cmd("play")          // MU4: toggles play↔pause
-        vlcTogglePause()
+        // Guard: cmd("play") in MU4 is a toggle — calling it on a stopped score
+        // would restart it. Only send it if we know the score is currently playing.
+        if (playMode !== "audio" && root._scoreIsPlaying) cmd("play")
+        if (playMode !== "score") vlcTogglePause()
         delayTimer.stop()
     }
 
     function transportStop() {
-        cmd("stop")
-        vlcStop()
+        if (playMode !== "audio") cmd("stop")
+        if (playMode !== "score") vlcStop()
         delayTimer.stop()
+        root._scoreIsPlaying = false
     }
 
     function transportRewind() {
-        cmd("rewind")
-        vlcSeek(0)
+        if (playMode !== "audio") cmd("rewind")
+        if (playMode !== "score") vlcSeek(0)
     }
 
     // ── Runtime state ─────────────────────────────────────────────────────
     property string filePath: ""
     property string fileName: ""
     property bool   isPlaying: false
+    property bool   _scoreIsPlaying: false   // tracks whether we started score playback
     property string statusText: "v" + version + " — Ready"
     property string currentScoreKey: ""
     property var    fileDialog: null
-    property string _delayTarget: ""   // "vlc" | "score" | ""
-    property int    vlcPosition: 0     // seconds, updated by poll
-    property int    vlcLength: 0       // seconds, updated by poll
+    property string _delayTarget: ""
+    property int    vlcPosition: 0
+    property int    vlcLength: 0
     property bool   _vlcLaunched: false
     property int    _vlcPollFail: 0
 
@@ -229,7 +236,6 @@ MuseScore {
             } catch (e) {}
         }
         path = path || _cfgGet("lastFilePath", "")
-        console.log("[AudioCompanion] loadForScore key=" + key + " path=" + path)
         if (path !== "") {
             root.filePath = path
             root.fileName = path.split("/").pop()
@@ -240,7 +246,6 @@ MuseScore {
     function saveFileForScore() {
         _cfgSet("lastFilePath", root.filePath)
         var key = scoreKey()
-        console.log("[AudioCompanion] saveFileForScore key=" + key + " path=" + root.filePath)
         if (key === "") return
         try {
             var map = JSON.parse(_cfgGet("scoreFileMap", "{}"))
@@ -272,10 +277,8 @@ MuseScore {
                 root.fileName = url.split("/").pop()
                 root.statusText = "v" + version + " — " + root.fileName
                 saveFileForScore()
-                console.log("[AudioCompanion] File selected: " + root.filePath)
             })
             root.fileDialog = dlg
-            console.log("[AudioCompanion] FileDialog: OK")
         } catch (e) {
             console.log("[AudioCompanion] FileDialog unavailable, using text input: " + e)
             root.statusText = "Paste a file path and press Enter"
@@ -295,33 +298,49 @@ MuseScore {
         if (key !== currentScoreKey) {
             transportStop()
             loadForScore()
+            return
+        }
+        // Detect score finishing (MU4 exposes state.isPlaying in some versions).
+        if (typeof state.isPlaying !== "undefined") {
+            if (root._scoreIsPlaying && !state.isPlaying) {
+                // Score stopped naturally; stop audio if it's still running.
+                if (root.vlcState === "playing" && root.playMode !== "score") {
+                    root.vlcStop()
+                }
+            }
+            root._scoreIsPlaying = state.isPlaying
         }
     }
 
     // ── UI ────────────────────────────────────────────────────────────────
 
-    // Fires the delayed half of a staggered dual-engine start.
     Timer {
         id: delayTimer
         repeat: false
         onTriggered: {
-            if (root._delayTarget === "vlc")   root.vlcPlay()
+            if (root._delayTarget === "vlc")    root.vlcPlay()
             else if (root._delayTarget === "score") cmd("play")
             root._delayTarget = ""
         }
     }
 
-    // Poll VLC every second to track playback state and detect when it stops.
     Timer {
         interval: 1000
         repeat: true
         running: true
         onTriggered: {
+            var prevVlcState = root.vlcState
             root._vlcGet("", function (ok, xml, httpStatus) {
                 if (ok) {
                     root._vlcLaunched = false
                     root._vlcPollFail = 0
                     root._parseVlc(xml)
+                    // VLC finished naturally while score was running → stop score.
+                    if (prevVlcState === "playing" && root.vlcState === "stopped"
+                            && root._scoreIsPlaying && root.playMode !== "score") {
+                        cmd("stop")
+                        root._scoreIsPlaying = false
+                    }
                 } else {
                     root.vlcConnected = false
                     root.vlcState     = "stopped"
@@ -331,7 +350,6 @@ MuseScore {
                         root.statusText = "Starting VLC…"
                     } else {
                         root._vlcLaunched = false
-                        // httpStatus 0 = network unreachable; 401 = bad auth; 404 = wrong URL
                         root.statusText = "VLC not running — ./start-vlc-server.sh"
                     }
                 }
@@ -431,14 +449,14 @@ MuseScore {
                 }
             }
 
-            // ── Row 3: transport + skip buttons ───────────────────────────
+            // ── Row 3: transport + skip + mode ────────────────────────────
             Row {
                 spacing: 3
 
                 Button {
                     text: "⏮"
                     implicitWidth: 30; implicitHeight: 28
-                    enabled: root.vlcConnected && root.filePath !== ""
+                    enabled: root.playMode !== "audio" || (root.vlcConnected && root.filePath !== "")
                     onClicked: root.transportRewind()
                 }
                 Button {
@@ -454,11 +472,14 @@ MuseScore {
                     onClicked: root.vlcSkip(-3)
                 }
                 Button {
-                    text: root.isPlaying ? "⏸" : "▶"
+                    text: (root._scoreIsPlaying || root.isPlaying) ? "⏸" : "▶"
                     implicitWidth: 36; implicitHeight: 28
-                    enabled: root.vlcConnected && root.filePath !== ""
+                    enabled: root.playMode === "score"
+                             || (root.vlcConnected && root.filePath !== "")
                     onClicked: {
-                        if (root.vlcState === "stopped") root.transportPlay()
+                        var active = root._scoreIsPlaying || root.isPlaying
+                                     || root.vlcState === "paused"
+                        if (!active) root.transportPlay()
                         else root.transportPause()
                     }
                 }
@@ -477,8 +498,22 @@ MuseScore {
                 Button {
                     text: "⏹"
                     implicitWidth: 30; implicitHeight: 28
-                    enabled: root.vlcConnected
+                    enabled: root.vlcConnected || root._scoreIsPlaying
                     onClicked: root.transportStop()
+                }
+                // Spacer
+                Item { width: 4; height: 1 }
+                // Play-mode cycle button: Both → Audio → Score → Both
+                Button {
+                    text: root.playMode === "both" ? "Both" : (root.playMode === "audio" ? "Audio" : "Score")
+                    implicitWidth: 52; implicitHeight: 28
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Cycle: Both → Audio only → Score only"
+                    onClicked: {
+                        if (root.playMode === "both")        root.playMode = "audio"
+                        else if (root.playMode === "audio")  root.playMode = "score"
+                        else                                 root.playMode = "both"
+                    }
                 }
             }
 
@@ -530,7 +565,8 @@ MuseScore {
                         id: offsetSpin
                         from: -10000; to: 10000
                         value: _cfg ? _cfg.delayMs : 0
-                        stepSize: 10
+                        stepSize: 1
+                        editable: true
                         implicitWidth: 96; implicitHeight: 28
                         onValueModified: _cfgSet("delayMs", value)
                         textFromValue: function (v) { return (v >= 0 ? "+" : "") + v }
