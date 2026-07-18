@@ -2,12 +2,12 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v1.2.0
+// v1.2.2
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "1.2.0"
+    version: "1.2.2"
     pluginType: "dialog"
     width: 460
     height: 176
@@ -55,7 +55,7 @@ MuseScore {
     }
 
     // ── VLC HTTP bridge ───────────────────────────────────────────────────
-    property string _vlcBase: "http://127.0.0.1:9090"
+    property string _vlcBase: "http://127.0.0.1:9091"
     property string _vlcPass: "musescore"
     property bool   vlcConnected: false
     property string vlcState: "stopped"    // "stopped" | "playing" | "paused"
@@ -69,10 +69,20 @@ MuseScore {
             ? btoa(":" + _vlcPass)
             : "Om11c2VzY29yZQ=="
         xhr.setRequestHeader("Authorization", "Basic " + encoded)
+        // A hung connection (no RST, no Qt-level timeout event) must still
+        // resolve the callback, or the UI freezes on stale status text.
+        var done = false
+        function finish(ok, text, status) {
+            if (done) return
+            done = true
+            if (cb) cb(ok, text, status)
+        }
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) return
-            if (cb) cb(xhr.status === 200, xhr.responseText, xhr.status)
+            finish(xhr.status === 200, xhr.responseText, xhr.status)
         }
+        xhr.ontimeout = function () { finish(false, "", -1) }
+        xhr.onerror   = function () { finish(false, "", -1) }
         xhr.send()
     }
 
@@ -350,7 +360,8 @@ MuseScore {
                         root.statusText = "Starting VLC…"
                     } else {
                         root._vlcLaunched = false
-                        root.statusText = "VLC not running — ./start-vlc-server.sh"
+                        // -1 = hung/timed out; 0 = refused/unreachable; 401 = bad auth; 404 = wrong URL
+                        root.statusText = "VLC: HTTP " + httpStatus + " — ./start-vlc-server.sh"
                     }
                 }
             })

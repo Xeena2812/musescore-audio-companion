@@ -3,9 +3,9 @@
 # Run this once before using the plugin; keep the terminal open.
 #
 # Usage: ./start-vlc-server.sh [port [password]]
-#   defaults: port=9090  password=musescore
+#   defaults: port=9091  password=musescore
 
-PORT=${1:-9090}
+PORT=${1:-9091}
 PASS=${2:-musescore}
 
 if ! command -v cvlc &>/dev/null; then

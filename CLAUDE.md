@@ -10,33 +10,32 @@ A MuseScore 4 plugin (QML) that plays back an external audio file synchronized w
 
 ## Environment
 
-- **MuseScore Studio 4.6.5** on Ubuntu, installed via **snap**
-- Plugin install path: `~/Documents/MuseScore4/Plugins/audio-companion/`
-- Logs: `~/snap/musescore/current/.local/share/MuseScore/MuseScore4/logs/`
+- **MuseScore Studio**, installed via **Flatpak** (`org.musescore.MuseScore`) on **Fedora**. Version drifts as Flatpak auto-updates it (was 4.6.3, now 4.7.4) — check the newest log's startup line rather than trusting a remembered version number.
+- Plugin install path: `~/Documents/MuseScore4/Plugins/` (unchanged under Flatpak — the app has `filesystems=home`, i.e. full real-`$HOME` access, not sandboxed to `~/.var/app/...`)
+- Logs: `~/.var/app/org.musescore.MuseScore/data/MuseScore/MuseScore4/logs/` (newest file by `ls -t`). There's also a stale, unrelated `~/.local/share/MuseScore/MuseScore4/` left over from a prior native/snap install — ignore it.
 - Qt 6 (MU4.4+ uses Qt 6)
 - No Plugin Creator in MU4 — edit files externally, then reload via **Plugins → Manage Plugins → Reload**
-- **QtMultimedia objects instantiate** in the snap sandbox but `QMediaPlayer` requires a GStreamer backend to actually play audio. Required system packages (install once): `sudo apt install libqt6multimedia6 gstreamer1.0-qt6`. Codec plugins `gstreamer1.0-plugins-good` and `gstreamer1.0-libav` cover MP3/FLAC/OGG/WAV and are already installed on the dev machine.
+- **QtMultimedia objects instantiate** in the Flatpak sandbox but `QMediaPlayer` requires a GStreamer backend to actually play audio. Required system packages (install once): `sudo apt install libqt6multimedia6 gstreamer1.0-qt6`. Codec plugins `gstreamer1.0-plugins-good` and `gstreamer1.0-libav` cover MP3/FLAC/OGG/WAV and are already installed on the dev machine.
+- **Port 9090 is claimed by Cockpit** (`cockpit.socket`, enabled by default on Fedora) — this is why the VLC HTTP bridge uses port **9091**, not VLC's traditional default. If VLC's status endpoint ever needs to move again, verify the new port is free first (`ss -tln`) — 9090 silently answers with Cockpit's login page (`200 OK`, but not VLC's XML), which looks like "connected but broken," not "connection refused."
+- `console.log(...)` calls in plugin QML/JS do **not** appear in the MuseScore log file — don't rely on it for debugging; use on-screen state (Text elements bound to debug properties) instead.
+- To test networking, filesystem access, or run a command in the *exact* sandbox MuseScore executes in: `flatpak run --command=bash org.musescore.MuseScore -c '<command>'` (or `--command=curl` directly). No `qml`/`qmlscene` binary exists inside that sandbox, so standalone QML/JS test harnesses aren't possible this way.
 
 ## Development Workflow
 
-There is no build step. Edit `.qml` files in this repo, **copy to the MuseScore plugins folder**, then disable + re-enable the plugin in MuseScore for changes to take effect:
+There is no build step. Edit `.qml` files in this repo, **copy to the MuseScore plugins folder**, then get MuseScore to pick up the change:
 
 ```bash
 cp ~/Projects/musescore-audio-companion/AudioCompanion.qml ~/Documents/MuseScore4/Plugins/
 ```
 
-```
-Plugins → Manage Plugins → uncheck → check → Close, then run again
-```
-
-Simply re-running the plugin from the menu re-executes `onRun` but does **not** re-parse the QML — disable/re-enable is required for any structural or UI changes.
+Simply re-running the plugin from the menu re-executes `onRun` but does **not** re-parse the QML. In principle disable + re-enable (`Plugins → Manage Plugins → uncheck → check → Close`) should be enough for structural/UI changes — but on the current Flatpak/Fedora dev setup this has proven **unreliable**: changes sometimes don't take effect until MuseScore is **fully quit and relaunched**. If a reload doesn't seem to be taking effect (stale behavior, old UI), restart the whole app before assuming the change is wrong.
 
 To check logs after a crash or QML error:
 ```bash
-tail -f ~/snap/musescore/current/.local/share/MuseScore/MuseScore4/logs/MuseScore*.log
+tail -f ~/.var/app/org.musescore.MuseScore/data/MuseScore/MuseScore4/logs/MuseScore*.log
 ```
 
-QtMultimedia is confirmed working in the snap sandbox (tested via probe plugin).
+QtMultimedia is confirmed working in the Flatpak sandbox (tested via probe plugin).
 
 ## MU4 QML Rules (always follow)
 
