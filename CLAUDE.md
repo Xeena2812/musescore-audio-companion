@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A MuseScore 4 plugin (QML) that plays back an external audio file synchronized with score playback. The plugin owns the transport: its Play/Pause/Stop controls drive both MuseScore's internal playback engine and an external audio file simultaneously.
 
-**Planned features:** audio file loading (mp3/wav/ogg/flac), configurable ms delay offset relative to measure 1 (positive or negative), volume control, and seek-on-cursor-move in edit mode via `onScoreStateChanged` + `selectionChanged`.
+**Shipped (v1.3.0):** file loading, ms delay offset with nudges, volume/mute, speed (Audio mode), A–B loop (Audio mode), recent files, per-score settings, keyboard shortcuts. **Still planned:** seek-on-cursor-move via `onScoreStateChanged` + `selectionChanged` (needs cursor/tempo API; unverified in 4.7.4).
 
 ## Environment
 
@@ -44,7 +44,8 @@ QtMultimedia is confirmed working in the Flatpak sandbox (tested via probe plugi
 - Never use `Qt.quit()` — use `quit()` instead
 - Score modifications must be wrapped in `curScore.startCmd()` / `curScore.endCmd()`
 - **Do not use `QtQuick.Dialogs`** — broken in MU4.4+
-- **`pluginType: "dock"` is broken in MU4** due to the UI rewrite — use `"dialog"` only
+- **`pluginType: "dock"` is broken in MU4** — confirmed on 4.7.4: it opens the same plain dialog. Use `"dialog"` only. Plugin dialogs are **fixed-size**: they ignore later `width`/`height` changes and can't be resized, so the window uses a fixed `height` with the footer pinned to the bottom. Upstream dockable plugins (PR musescore/MuseScore#35277) aren't released yet; tracked in repo issue #1.
+- Reusable styled controls (`PBtn`, `PSlider`) are **inline `component`s** inside `AudioCompanion.qml`. Don't add extra `.qml` files to the Plugins folder: MuseScore scans that folder and would list each file as a plugin.
 - For file pickers, use `Qt.labs.platform.FileDialog` loaded via `Qt.createQmlObject` (dynamic import), so the plugin still loads if the module is absent from the snap. Connect signals imperatively with `.onAccepted.connect(...)`
 - **Do not `import Qt.labs.settings`** — Settings is integrated into the MuseScore module
 
