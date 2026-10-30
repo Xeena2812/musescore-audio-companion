@@ -67,7 +67,7 @@ MuseScore {
         poll.start()
     }
 
-    function run() {
+    function runProbe() {
         log = ""
         if (path === "") { say("no file"); return }
         ti = -1
@@ -88,13 +88,16 @@ MuseScore {
         } catch (e) { say("FileDialog unavailable: " + e) }
     }
 
+    Rectangle {
+        anchors.fill: parent
+        color: "#202020"
     Column {
         anchors { fill: parent; margins: 16 }
         spacing: 8
         Row {
             spacing: 8
             Button { text: "Browse…"; onClicked: root.pickFile() }
-            Button { text: "Run probe"; onClicked: root.run() }
+            Button { text: "Run probe"; onClicked: root.runProbe() }
             Button { text: "Stop"; onClicked: { mp.stop(); poll.stop(); driftT.stop() } }
             Button { text: "Close"; onClicked: root.quit() }
         }
@@ -102,10 +105,11 @@ MuseScore {
             id: pathField; width: parent.width; placeholderText: "or type absolute path"
             onTextChanged: root.path = text
         }
-        Text { text: "pos " + mp.position + " / " + mp.duration + " ms  state " + mp.playbackState; color: "#888" }
+        Text { text: "pos " + mp.position + " / " + mp.duration + " ms  state " + mp.playbackState; color: "#bbb" }
         ScrollView {
             width: parent.width; height: parent.height - 120
-            TextArea { readOnly: true; text: root.log; font.family: "monospace"; font.pixelSize: 11; wrapMode: Text.Wrap }
+            TextArea { readOnly: true; color: "#eee"; text: root.log; font.family: "monospace"; font.pixelSize: 11; wrapMode: Text.Wrap }
         }
+    }
     }
 }
