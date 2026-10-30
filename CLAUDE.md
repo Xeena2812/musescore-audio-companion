@@ -20,6 +20,10 @@ A MuseScore 4 plugin (QML) that plays back an external audio file synchronized w
 - `console.log(...)` calls in plugin QML/JS do **not** appear in the MuseScore log file — don't rely on it for debugging; use on-screen state (Text elements bound to debug properties) instead.
 - To test networking, filesystem access, or run a command in the *exact* sandbox MuseScore executes in: `flatpak run --command=bash org.musescore.MuseScore -c '<command>'` (or `--command=curl` directly). No `qml`/`qmlscene` binary exists inside that sandbox, so standalone QML/JS test harnesses aren't possible this way.
 
+## VLC auto-start (URL-scheme handler)
+
+QML plugins can't spawn processes, so `_tryLaunchVlc()` calls `Qt.openUrlExternally("audiocompanion://start")` and `Component.onDestruction` calls `audiocompanion://stop` (only if the plugin launched VLC). A per-OS handler in `install/` (Linux `.desktop` + `xdg-mime`, Windows HKCU registry + PowerShell, macOS osacompile applet) runs the launcher script, which is idempotent and only touches the VLC bound to port 9091. Verified on Linux: works from the host and from inside the Flatpak sandbox (OpenURI portal, no prompt observed). Windows/macOS installers are untested. The launcher honors `AUDIOCOMPANION_PORT` for testing on a temp port — never kill the user's GUI VLC. `Qt.openUrlExternally` gives no failure signal when no handler exists, so the plugin relies on the status ping timing out and shows the "run the installer" banner.
+
 ## Development Workflow
 
 There is no build step. Edit `.qml` files in this repo, **copy to the MuseScore plugins folder**, then get MuseScore to pick up the change:

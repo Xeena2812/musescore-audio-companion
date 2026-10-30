@@ -335,6 +335,7 @@ MuseScore {
     property int    vlcPosition: 0
     property int    vlcLength: 0
     property bool   _vlcLaunched: false
+    property bool   _vlcWeStarted: false   // only stop a VLC we launched
     property int    _vlcPollFail: 0
     property var    recentList: []
 
@@ -364,7 +365,9 @@ MuseScore {
     }
 
     function _tryLaunchVlc() {
-        Qt.openUrlExternally(Qt.resolvedUrl("start-vlc-server.sh").toString())
+        // Handled by the audiocompanion:// scheme handler from install/.
+        Qt.openUrlExternally("audiocompanion://start")
+        _vlcWeStarted = true
         _vlcLaunched = true
         _vlcPollFail = 0
         root.statusText = "Starting VLC…"
@@ -490,6 +493,7 @@ MuseScore {
     Component.onDestruction: {
         root.vlcRate(1)
         root.vlcStop()
+        if (root._vlcWeStarted) Qt.openUrlExternally("audiocompanion://stop")
     }
 
     onScoreStateChanged: {
@@ -838,7 +842,7 @@ MuseScore {
                         font.bold: true
                     }
                     Text {
-                        text: "HTTP " + root.vlcHttp + " on port 9091. Start the VLC server, then retry."
+                        text: "HTTP " + root.vlcHttp + " on port 9091. Run the installer in the plugin's install/ folder, then retry."
                         color: pal.text
                         font.pixelSize: 11
                     }
@@ -846,7 +850,7 @@ MuseScore {
                 PBtn {
                     anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
                     text: "Retry"
-                    onClicked: root.pollVlc()
+                    onClicked: root._tryLaunchVlc()
                 }
             }
 
