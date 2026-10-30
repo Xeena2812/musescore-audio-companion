@@ -73,6 +73,74 @@ MuseScore {
     property bool   _vlcEverPolled: false
     property bool   _vlcSynced: false      // volume/rate pushed since last (re)connect
 
+    // ── Qt Multimedia engine (default); VLC bridge below is the fallback ──
+    // The vlc* functions are the engine-neutral audio API: each one dispatches
+    // to the Qt MediaPlayer when useQt is set, else to VLC over HTTP.
+    // Created dynamically so the plugin still loads without QtMultimedia.
+    property bool useQt: false
+    property var  qp: null     // MediaPlayer
+    property var  qao: null    // AudioOutput
+
+    function _initQtPlayer() {
+        try {
+            root.qao = Qt.createQmlObject('import QtMultimedia; AudioOutput {}', root, "qao")
+            root.qp  = Qt.createQmlObject('import QtMultimedia; MediaPlayer {}', root, "qp")
+            root.qp.audioOutput = root.qao
+        } catch (e) {
+            console.log("[AudioCompanion] QtMultimedia unavailable: " + e)
+            root.qp = null
+            return false
+        }
+        root.qp.errorOccurred.connect(function (err, msg) { root._qtFailed(msg) })
+        root.qp.positionChanged.connect(function () {
+            if (!root.useQt) return
+            root.vlcPosition = Math.floor(root.qp.position / 1000)
+            root._syncChecks(root.vlcState)
+        })
+        root.qp.durationChanged.connect(function () {
+            if (root.useQt) root.vlcLength = Math.floor(root.qp.duration / 1000)
+        })
+        root.qp.playbackStateChanged.connect(function () {
+            if (!root.useQt) return
+            var prev = root.vlcState
+            var st = root.qp.playbackState   // 0 stopped, 1 playing, 2 paused
+            root.vlcState  = st === 1 ? "playing" : (st === 2 ? "paused" : "stopped")
+            root.isPlaying = (st === 1)
+            if (st === 0) root.vlcPosition = 0
+            root._setQtStatus()
+            root._syncChecks(prev)
+        })
+        root.useQt = true
+        root.vlcConnected = true
+        root._vlcEverPolled = true
+        root._vlcSynced = true
+        root._setQtStatus()
+        return true
+    }
+
+    function _setQtStatus() {
+        if (root.vlcState === "playing")      root.statusText = "▶  " + root.fileName
+        else if (root.vlcState === "paused")  root.statusText = "⏸  " + root.fileName
+        else root.statusText = "v" + version + " — " + (root.fileName || "Ready")
+    }
+
+    // Any Qt Multimedia error (no backend, unsupported codec…) → switch to VLC.
+    function _qtFailed(msg) {
+        if (!root.useQt) return
+        console.log("[AudioCompanion] QtMultimedia error, falling back to VLC: " + msg)
+        root.useQt = false
+        if (root.qp) root.qp.stop()
+        root.vlcConnected = false
+        root.vlcState = "stopped"
+        root.isPlaying = false
+        root._vlcEverPolled = false
+        root.statusText = "Audio engine error (" + msg + ") — using VLC"
+        root._vlcGet("", function (ok, xml) {
+            root._vlcEverPolled = true
+            if (ok) root._parseVlc(xml); else root._tryLaunchVlc()
+        })
+    }
+
     function _vlcGet(query, cb) {
         var xhr = new XMLHttpRequest()
         var url = _vlcBase + "/requests/status.xml" + (query ? "?" + query : "")
@@ -120,6 +188,13 @@ MuseScore {
 
     function vlcPlay() {
         if (filePath === "") return
+        if (useQt) {
+            var src = "file://" + filePath
+            if (qp.source.toString() !== src) qp.source = src
+            qp.play()
+            applyRate()
+            return
+        }
         var input = encodeURIComponent("file://" + filePath)
         _vlcGet("command=in_play&input=" + input, function (ok, xml) {
             if (ok) { _parseVlc(xml); applyRate() }
@@ -128,10 +203,16 @@ MuseScore {
     }
 
     function vlcTogglePause() {
+        if (useQt) {
+            if (qp.playbackState === 1) qp.pause()
+            else if (qp.playbackState === 2) qp.play()
+            return
+        }
         _vlcGet("command=pl_pause", function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
     function vlcStop() {
+        if (useQt) { qp.stop(); return }
         _vlcGet("command=pl_stop", function (ok, xml) {
             if (ok) _parseVlc(xml)
             root.isPlaying = false
@@ -139,16 +220,19 @@ MuseScore {
     }
 
     function vlcSeek(ms) {
+        if (useQt) { qp.position = Math.max(0, Math.round(ms)); root.vlcPosition = Math.floor(ms / 1000); return }
         _vlcGet("command=seek&val=" + Math.round(ms / 1000) + "s",
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
     function vlcVolume(v) {
+        if (useQt) { qao.volume = v; return }
         _vlcGet("command=volume&val=" + Math.round(v * 256),
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
 
     function vlcRate(r) {
+        if (useQt) { qp.playbackRate = r; return }
         _vlcGet("command=rate&val=" + r,
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
@@ -162,7 +246,24 @@ MuseScore {
         vlcRate(root.playMode === "audio" ? root.speed : 1)
     }
 
+    // Engine-neutral checks run after every status update.
+    function _syncChecks(prevVlcState) {
+        // VLC finished naturally while score was running → stop score.
+        if (prevVlcState === "playing" && root.vlcState === "stopped"
+                && root._scoreIsPlaying && root.playMode !== "score") {
+            cmd("stop")
+            root._scoreIsPlaying = false
+        }
+        // A–B loop (Audio mode only; second-level accuracy).
+        if (root.loopOn && root.playMode === "audio" && root.loopA >= 0
+                && root.loopB > root.loopA && root.vlcState === "playing"
+                && root.vlcPosition >= root.loopB) {
+            root.vlcSeek(root.loopA * 1000)
+        }
+    }
+
     function pollVlc() {
+        if (useQt) return
         var prevVlcState = root.vlcState
         root._vlcGet("", function (ok, xml, httpStatus) {
             root._vlcEverPolled = true
@@ -176,18 +277,7 @@ MuseScore {
                     root.applyVolume()
                     root.applyRate()
                 }
-                // VLC finished naturally while score was running → stop score.
-                if (prevVlcState === "playing" && root.vlcState === "stopped"
-                        && root._scoreIsPlaying && root.playMode !== "score") {
-                    cmd("stop")
-                    root._scoreIsPlaying = false
-                }
-                // A–B loop (Audio mode only; second-level accuracy).
-                if (root.loopOn && root.playMode === "audio" && root.loopA >= 0
-                        && root.loopB > root.loopA && root.vlcState === "playing"
-                        && root.vlcPosition >= root.loopB) {
-                    root.vlcSeek(root.loopA * 1000)
-                }
+                root._syncChecks(prevVlcState)
             } else {
                 root.vlcConnected = false
                 root._vlcSynced   = false
@@ -335,6 +425,7 @@ MuseScore {
     property int    vlcPosition: 0
     property int    vlcLength: 0
     property bool   _vlcLaunched: false
+    property bool   _vlcWeStarted: false   // only stop a VLC we launched
     property int    _vlcPollFail: 0
     property var    recentList: []
 
@@ -364,7 +455,9 @@ MuseScore {
     }
 
     function _tryLaunchVlc() {
-        Qt.openUrlExternally(Qt.resolvedUrl("start-vlc-server.sh").toString())
+        // Handled by the audiocompanion:// scheme handler from install/.
+        Qt.openUrlExternally("audiocompanion://start")
+        _vlcWeStarted = true
         _vlcLaunched = true
         _vlcPollFail = 0
         root.statusText = "Starting VLC…"
@@ -481,6 +574,8 @@ MuseScore {
         }
 
         loadForScore()
+        if (_initQtPlayer()) return
+        // QtMultimedia missing: fall back to VLC.
         _vlcGet("", function(ok, xml) {
             root._vlcEverPolled = true
             if (ok) { _parseVlc(xml) } else { _tryLaunchVlc() }
@@ -490,6 +585,7 @@ MuseScore {
     Component.onDestruction: {
         root.vlcRate(1)
         root.vlcStop()
+        if (root._vlcWeStarted) Qt.openUrlExternally("audiocompanion://stop")
     }
 
     onScoreStateChanged: {
@@ -761,7 +857,8 @@ MuseScore {
                         }
                         Text {
                             font.pixelSize: 12
-                            text: root.vlcConnected ? "VLC connected"
+                            text: root.useQt ? "Audio ready"
+                                : root.vlcConnected ? "VLC connected"
                                 : root.vlcStarting  ? "Starting VLC…"
                                                     : "VLC offline"
                             color: root.vlcConnected ? "#2f9e50"
@@ -838,7 +935,7 @@ MuseScore {
                         font.bold: true
                     }
                     Text {
-                        text: "HTTP " + root.vlcHttp + " on port 9091. Start the VLC server, then retry."
+                        text: "HTTP " + root.vlcHttp + " on port 9091. Run the installer in the plugin's install/ folder, then retry."
                         color: pal.text
                         font.pixelSize: 11
                     }
@@ -846,7 +943,7 @@ MuseScore {
                 PBtn {
                     anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
                     text: "Retry"
-                    onClicked: root.pollVlc()
+                    onClicked: root._tryLaunchVlc()
                 }
             }
 
