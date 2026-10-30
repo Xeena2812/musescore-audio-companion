@@ -554,6 +554,7 @@ MuseScore {
         _initSettings()
         root.showPanels = _cfgGet("showPanels", 1) !== 0
         refreshRecent()
+        pollTheme()
 
         try {
             var dlg = Qt.createQmlObject(
@@ -638,7 +639,97 @@ MuseScore {
 
     // ── UI ────────────────────────────────────────────────────────────────
 
-    SystemPalette { id: pal; colorGroup: SystemPalette.Active }
+    SystemPalette { id: sys; colorGroup: SystemPalette.Active }
+
+    // ── MuseScore theme ───────────────────────────────────────────────────
+    // The plugin API doesn't expose the app theme, so read the theme code
+    // (ui/application/currentThemeCode) from MuseScore's own settings file.
+    // That file is shared in-process with MuseScore's settings, so changes are
+    // seen live. If it can't be read, fall back to the system palette.
+    property string themeCode: ""
+    property string _themeIni: ""
+
+    // [background, text, accent, surface] from MuseScore's src/app/configs/*.cfg
+    function _themeColors(code) {
+        var defs = {
+            "light":               ["#F5F5F6", "#111132", "#62B1FA", "#E6E9ED"],
+            "dark":                ["#2D2D30", "#EBEBEB", "#2082DD", "#363638"],
+            "high_contrast_black": ["#000000", "#FFFD38", "#0071DA", "#000000"],
+            "high_contrast_white": ["#FFFFFF", "#1E0073", "#00D87D", "#FFFFFF"]
+        }
+        var d = defs[code]
+        if (!d) return null
+        var text = Qt.color(d[1])
+        var accent = Qt.color(d[2])
+        var lum = 0.299 * accent.r + 0.587 * accent.g + 0.114 * accent.b
+        return {
+            bg: Qt.color(d[0]),
+            text: text,
+            accent: accent,
+            surface: Qt.color(d[3]),
+            muted: Qt.rgba(text.r, text.g, text.b, 0.6),
+            onAccent: lum > 0.55 ? Qt.color("#111132") : Qt.color("#FFFFFF")
+        }
+    }
+
+    function _homeDir() {
+        var m = Qt.resolvedUrl(".").toString().match(/^file:\/\/(.*)\/Documents\/MuseScore4\/Plugins\//)
+        return m ? decodeURIComponent(m[1]) : ""
+    }
+
+    function _readThemeCodeFrom(path) {
+        var heads = ['import QtCore\n', 'import Qt.labs.settings\n']
+        for (var i = 0; i < heads.length; i++) {
+            try {
+                var s = Qt.createQmlObject(heads[i] + 'Settings { category: "ui"; fileName: "' + path + '" }',
+                                           root, "themeProbe")
+                var v = s.value("application/currentThemeCode", "")
+                s.destroy()
+                if (v) return String(v)
+                return ""
+            } catch (e) {}
+        }
+        return ""
+    }
+
+    function pollTheme() {
+        var home = _homeDir()
+        if (home === "") return
+        var paths = _themeIni !== "" ? [_themeIni] : [
+            home + "/.var/app/org.musescore.MuseScore/config/MuseScore/MuseScore4.ini",   // Flatpak
+            home + "/snap/musescore/current/.config/MuseScore/MuseScore4.ini",            // Snap (unverified)
+            home + "/.config/MuseScore/MuseScore4.ini"                                    // native
+        ]
+        for (var i = 0; i < paths.length; i++) {
+            var code = _readThemeCodeFrom(paths[i])
+            if (code !== "") {
+                _themeIni = paths[i]
+                if (code !== themeCode) themeCode = code
+                return
+            }
+        }
+        if (themeCode !== "") themeCode = ""
+    }
+
+    Timer {
+        interval: 2000
+        repeat: true
+        running: true
+        onTriggered: root.pollTheme()
+    }
+
+    // Colour set the UI binds to. Same property names as SystemPalette so the
+    // controls read the same either way.
+    QtObject {
+        id: pal
+        readonly property var t: root._themeColors(root.themeCode)
+        readonly property color window:          t ? t.bg      : sys.window
+        readonly property color text:            t ? t.text    : sys.text
+        readonly property color mid:             t ? t.muted   : sys.mid
+        readonly property color highlight:       t ? t.accent  : sys.highlight
+        readonly property color highlightedText: t ? t.onAccent : sys.highlightedText
+        readonly property color alternateBase:   t ? t.surface : sys.alternateBase
+    }
 
     // Foreground colour at a given opacity — neutral washes that work in light and dark.
     function _tx(a) { return Qt.rgba(pal.text.r, pal.text.g, pal.text.b, a) }
@@ -654,7 +745,17 @@ MuseScore {
         leftPadding: 10
         rightPadding: 10
         font.pixelSize: 12
-        SystemPalette { id: bp }
+        SystemPalette { id: bsys }
+
+        // Theme colours come from the nearest ancestor exposing `themeHolder`; popups
+        // aren't in the content tree, so they set `th` explicitly.
+        property var th: null
+        readonly property var bp: th ? th : _find()
+        function _find() {
+            var p = b.parent
+            while (p && p.themeHolder === undefined) p = p.parent
+            return p ? p.themeHolder : bsys
+        }
 
         contentItem: Text {
             text: b.text
@@ -679,7 +780,14 @@ MuseScore {
     component PSlider: Slider {
         id: s
         implicitHeight: 24
-        SystemPalette { id: sp }
+        SystemPalette { id: ssys }
+
+        readonly property var sp: _find()
+        function _find() {
+            var p = s.parent
+            while (p && p.themeHolder === undefined) p = p.parent
+            return p ? p.themeHolder : ssys
+        }
 
         background: Rectangle {
             x: s.leftPadding
@@ -712,6 +820,7 @@ MuseScore {
     Rectangle {
         anchors.fill: parent
         color: pal.window
+        property var themeHolder: pal
 
         Column {
             id: content
@@ -787,6 +896,7 @@ MuseScore {
                             Repeater {
                                 model: root.recentList
                                 PBtn {
+                                    th: pal
                                     width: parent.width
                                     text: modelData.name
                                     onClicked: {
