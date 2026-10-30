@@ -68,3 +68,7 @@ MuseScore 4 installed via snap does not have a working GStreamer backend for Qt'
 ## License
 
 MIT
+
+## QtMultimedia probe (experimental)
+
+`AudioCompanionProbe.qml` is a separate throwaway plugin (not part of the real plugin) that checks whether Qt's own `MediaPlayer` could replace VLC. Copy it to the Plugins folder, enable it, open it, pick a long audio file, press **Run probe**: it plays, seeks to several positions and prints seek latency/error and 8 s playback drift on screen.
