@@ -10,26 +10,10 @@ MuseScore {
     version: "1.3.0"
     pluginType: "dialog"
     width: 520
-    height: 440   // generous start; fitHeight() trims it once layout has settled
-
-    // Size the dialog to its contents. Imperative (not a binding) so a manual
-    // resize by the user isn't fought; re-run whenever the content height changes.
-    function fitHeight() {
-        var h = Math.ceil(content.implicitHeight) + 32
-        if (h > 100 && h !== root.height) root.height = h
-    }
-
-    Connections {
-        target: content
-        function onImplicitHeightChanged() { fitTimer.restart() }
-    }
-
-    Timer {
-        id: fitTimer
-        interval: 60
-        repeat: false
-        onTriggered: root.fitHeight()
-    }
+    // MU4 plugin dialogs are fixed-size: the window ignores later width/height
+    // changes and can't be resized, and "dock" plugins open as the same dialog.
+    // Sized for the tallest case (VLC offline banner showing, panels expanded).
+    height: 430
 
     // ── Persistent settings ───────────────────────────────────────────────
     property var _cfg: null
@@ -477,7 +461,6 @@ MuseScore {
         _initSettings()
         root.showPanels = _cfgGet("showPanels", 1) !== 0
         refreshRecent()
-        fitTimer.restart()
 
         try {
             var dlg = Qt.createQmlObject(
@@ -1184,27 +1167,31 @@ MuseScore {
                 }
             }
 
-            // ── Footer ────────────────────────────────────────────────────
-            Rectangle { width: parent.width; height: 1; color: root._tx(0.12) }
+        }
 
-            Item {
-                width: parent.width
-                height: 16
+        // ── Footer (pinned to the bottom so the window's fixed height never clips it) ──
+        Item {
+            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: 14 }
+            height: 26
 
-                Text {
-                    anchors.left: parent.left
-                    width: parent.width * 0.5
-                    text: root.vlcConnected ? root.statusText : ""
-                    color: pal.mid
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                }
-                Text {
-                    anchors.right: parent.right
-                    text: "Space play · ←/→ 3 s · [ ] offset"
-                    color: pal.mid
-                    font.pixelSize: 11
-                }
+            Rectangle {
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                height: 1
+                color: root._tx(0.12)
+            }
+            Text {
+                anchors { left: parent.left; bottom: parent.bottom }
+                width: parent.width * 0.5
+                text: root.vlcConnected ? root.statusText : ""
+                color: pal.mid
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+            Text {
+                anchors { right: parent.right; bottom: parent.bottom }
+                text: "Space play · ←/→ 3 s · [ ] offset"
+                color: pal.mid
+                font.pixelSize: 11
             }
         }
     }
