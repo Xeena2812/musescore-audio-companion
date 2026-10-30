@@ -11,11 +11,15 @@ A MuseScore 4 plugin that plays an external audio file in sync with score playba
 - Volume control
 - Remembers which audio file belongs to each score
 
+## Audio engine
+
+The plugin plays audio with Qt Multimedia (`MediaPlayer`) by default - no extra software needed. If Qt Multimedia is missing or reports an error (no backend, unsupported codec), it falls back to VLC, which is where the `audiocompanion://` launcher below comes in. Qt Multimedia is verified only on Flatpak MuseScore on Linux; Snap, Windows and macOS are untested.
+
 ## Requirements
 
 - **MuseScore Studio 4**
-- **VLC media player** (native install; on Linux `sudo dnf install vlc` / `sudo apt install vlc`)
-- A one-time install of the **`audiocompanion://` URL handler** (below), so the plugin can start and stop VLC itself
+- **VLC media player** - only needed for the fallback engine (native install; on Linux `sudo dnf install vlc` / `sudo apt install vlc`)
+- For the VLC fallback only: a one-time install of the **`audiocompanion://` URL handler** (below), so the plugin can start and stop VLC itself
 
 ## Installation
 
