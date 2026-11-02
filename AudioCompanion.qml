@@ -2,18 +2,18 @@ import MuseScore
 import QtQuick
 import QtQuick.Controls
 
-// v1.3.0
+// v1.4.0
 MuseScore {
     id: root
     title: "Audio Companion"
     description: "Plays an audio file in sync with score playback"
-    version: "1.3.0"
+    version: "1.4.0"
     pluginType: "dialog"
     width: 520
     // MU4 plugin dialogs are fixed-size: the window ignores later width/height
     // changes and can't be resized, and "dock" plugins open as the same dialog.
     // Sized for the tallest case (VLC offline banner showing, panels expanded).
-    height: 430
+    height: 452
 
     // ── Persistent settings ───────────────────────────────────────────────
     property var _cfg: null
@@ -96,6 +96,12 @@ MuseScore {
             if (!root.useQt) return
             root.vlcPosition = Math.floor(root.qp.position / 1000)
             root._syncChecks(root.vlcState)
+        })
+        root.qp.mediaStatusChanged.connect(function () {
+            if (root.useQt && root._pendingSeekMs >= 0 && root._qtReady()) {
+                root.qp.position = root._pendingSeekMs
+                root._pendingSeekMs = -1
+            }
         })
         root.qp.durationChanged.connect(function () {
             if (root.useQt) root.vlcLength = Math.floor(root.qp.duration / 1000)
@@ -197,7 +203,10 @@ MuseScore {
         }
         var input = encodeURIComponent("file://" + filePath)
         _vlcGet("command=in_play&input=" + input, function (ok, xml) {
-            if (ok) { _parseVlc(xml); applyRate() }
+            if (ok) {
+                _parseVlc(xml); applyRate()
+                if (root._pendingSeekMs >= 0) { var ms = root._pendingSeekMs; root._pendingSeekMs = -1; vlcSeek(ms) }
+            }
             else root.statusText = "VLC not responding"
         })
     }
@@ -219,8 +228,26 @@ MuseScore {
         })
     }
 
+    // Qt can only seek once media is loaded (2 Loaded .. 6 EndOfMedia); earlier
+    // seeks are parked in _pendingSeekMs and applied by mediaStatusChanged.
+    property real _pendingSeekMs: -1
+    function _qtReady() {
+        var st = qp.mediaStatus
+        return st >= 2 && st <= 6
+    }
+
     function vlcSeek(ms) {
-        if (useQt) { qp.position = Math.max(0, Math.round(ms)); root.vlcPosition = Math.floor(ms / 1000); return }
+        ms = Math.max(0, Math.round(ms))
+        if (useQt) {
+            var src = "file://" + filePath
+            if (filePath !== "" && qp.source.toString() !== src) qp.source = src
+            if (_qtReady()) qp.position = ms
+            else _pendingSeekMs = ms
+            root.vlcPosition = Math.floor(ms / 1000)
+            return
+        }
+        // VLC can't seek an input that isn't playing: apply it right after the next play.
+        if (root.vlcState === "stopped") { _pendingSeekMs = ms; return }
         _vlcGet("command=seek&val=" + Math.round(ms / 1000) + "s",
                 function (ok, xml) { if (ok) _parseVlc(xml) })
     }
@@ -349,6 +376,114 @@ MuseScore {
         root.loopOn = false
     }
 
+    // ── Cursor sync ───────────────────────────────────────────────────────
+    // Verified on 4.7.4 (see CLAUDE.md): the plugin can read the selected tick and
+    // move the selection, but there is no live playback position. So the audio is
+    // aligned to the cursor at rest and at Play time only; there is no drift correction.
+    // Alignment: audio time = score time − offsetMs (same convention as transportPlay).
+    property bool syncCursor: true     // follow the score cursor (Both mode)
+    property var  _tempoMap: [{ tick: 0, ms: 0, bps: 2 }]
+    property int  _selTick: -1
+    property string syncInfo: ""
+    property bool tempoMismatch: false
+    readonly property int ticksPerQuarter: 480
+
+    onSyncCursorChanged: { root._selTick = -1; saveScoreSettings() }
+
+    // Tempo map from the score's tempo texts (TEMPO_TEXT.tempo is quarter notes per
+    // second). Gradual changes (rit./accel.) and repeats are not modelled; the result is
+    // compared with curScore.duration and flagged when it disagrees.
+    function _buildTempoMap() {
+        var found = []
+        var endTick = 0
+        try {
+            var c = curScore.newCursor()
+            c.rewind(Cursor.SCORE_START)
+            var n = 0
+            while (c.segment && n < 50000) {
+                var anns = c.segment.annotations
+                for (var i = 0; anns && i < anns.length; i++) {
+                    if (anns[i].type === Element.TEMPO_TEXT && anns[i].tempo > 0)
+                        found.push({ tick: c.tick, bps: anns[i].tempo })
+                }
+                if (!c.next()) break
+                n++
+            }
+            endTick = curScore.lastSegment ? curScore.lastSegment.tick : 0
+        } catch (e) {
+            console.log("[AudioCompanion] tempo map failed: " + e)
+        }
+        var pts = [{ tick: 0, ms: 0, bps: 2 }]      // MuseScore's default is 120 bpm
+        for (var j = 0; j < found.length; j++) {
+            var last = pts[pts.length - 1]
+            if (found[j].tick === last.tick) { last.bps = found[j].bps; continue }
+            pts.push({ tick: found[j].tick, bps: found[j].bps,
+                       ms: last.ms + (found[j].tick - last.tick) / ticksPerQuarter / last.bps * 1000 })
+        }
+        root._tempoMap = pts
+        var dur = 0
+        try { dur = curScore.duration } catch (e2) {}
+        var est = _tickToMs(endTick) / 1000
+        root.tempoMismatch = dur > 0 && endTick > 0 && Math.abs(est - dur) > Math.max(1, dur * 0.01)
+    }
+
+    function _tickToMs(tick) {
+        var pts = root._tempoMap
+        var i = pts.length - 1
+        while (i > 0 && pts[i].tick > tick) i--
+        return pts[i].ms + (tick - pts[i].tick) / ticksPerQuarter / pts[i].bps * 1000
+    }
+
+    function _msToTick(ms) {
+        var pts = root._tempoMap
+        var i = pts.length - 1
+        while (i > 0 && pts[i].ms > ms) i--
+        return pts[i].tick + (ms - pts[i].ms) / 1000 * pts[i].bps * ticksPerQuarter
+    }
+
+    // Tick of the selected note/range start, or -1 when nothing usable is selected.
+    function _selectionTick() {
+        try {
+            if (!curScore) return -1
+            var sel = curScore.selection
+            if (sel.isRange) return sel.startSegment ? sel.startSegment.tick : -1
+            var els = sel.elements
+            if (!els || els.length === 0) return -1
+            var e = els[0]
+            for (var i = 0; e && i < 6; i++) {
+                if (e.name === "Segment") return e.tick
+                e = e.parent
+            }
+        } catch (ex) {}
+        return -1
+    }
+
+    function _fmtMs(ms) {
+        var t = Math.max(0, Math.round(ms / 100))
+        var m = Math.floor(t / 600)
+        var sec = (t % 600) / 10
+        return m + ":" + (sec < 10 ? "0" : "") + sec.toFixed(1)
+    }
+
+    function _seekAudioToTick(tick) {
+        var scoreMs = _tickToMs(tick)
+        // Tick 0 keeps the normal start (a negative offset lets the audio lead in).
+        var audioMs = tick === 0 ? 0 : Math.max(0, scoreMs - root.offsetMs)
+        vlcSeek(audioMs)
+        root.syncInfo = "Cursor " + _fmtMs(scoreMs) + " → audio " + _fmtMs(audioMs)
+    }
+
+    function pollCursor() {
+        if (!root.syncCursor || root.playMode !== "both" || !root.canSeek) return
+        if (root._scoreIsPlaying || root.vlcState === "playing") return
+        var t = _selectionTick()
+        if (t < 0 || t === root._selTick) return
+        root._selTick = t
+        if (root._scorePaused) root._cursorMovedWhilePaused = true
+        _buildTempoMap()
+        _seekAudioToTick(t)
+    }
+
     // ── Dual transport ────────────────────────────────────────────────────
     function transportPlay() {
         var scoreEnabled = (playMode !== "audio")
@@ -361,8 +496,34 @@ MuseScore {
         }
 
         if (scoreEnabled) root._scoreIsPlaying = true
+        root._scorePaused = false
+        root._cursorMovedWhilePaused = false
 
         var delay = root.offsetMs
+
+        // Cursor sync: MuseScore plays from the selected note, so start the audio at the
+        // matching point. Read the selection fresh rather than trusting an earlier seek.
+        if (scoreEnabled && audioEnabled && root.syncCursor) {
+            var startTick = _selectionTick()
+            if (startTick > 0) {
+                _buildTempoMap()
+                var p = _tickToMs(startTick) - delay
+                if (p >= 0) {
+                    vlcSeek(p)
+                    cmd("play")
+                    vlcPlay()
+                } else {
+                    // Audio hasn't started yet at this score position: wait out the gap.
+                    vlcSeek(0)
+                    cmd("play")
+                    _delayTarget = "vlc"
+                    delayTimer.interval = -p
+                    delayTimer.restart()
+                }
+                return
+            }
+            if (startTick === 0) vlcSeek(0)
+        }
         if (scoreEnabled && audioEnabled) {
             if (delay >= 0) {
                 cmd("play")
@@ -387,9 +548,31 @@ MuseScore {
     }
 
     function transportPause() {
+        // Resuming after the cursor was moved while paused: MuseScore would carry on from
+        // the pause point, so restart both from the new cursor instead.
+        if (root._scorePaused && root._cursorMovedWhilePaused && playMode === "both") {
+            root._cursorMovedWhilePaused = false
+            cmd("stop")
+            vlcStop()
+            root._scorePaused = false
+            transportPlay()
+            return
+        }
         // Guard: cmd("play") in MU4 is a toggle — calling it on a stopped score
         // would restart it. Only send it if we know the score is currently playing.
-        if (playMode !== "audio" && root._scoreIsPlaying) cmd("play")
+        // _scorePaused remembers that we paused it, so the same call resumes it and the
+        // button flips back to play.
+        if (playMode !== "audio") {
+            if (root._scoreIsPlaying) {
+                cmd("play")
+                root._scoreIsPlaying = false
+                root._scorePaused = true
+            } else if (root._scorePaused) {
+                cmd("play")
+                root._scoreIsPlaying = true
+                root._scorePaused = false
+            }
+        }
         if (playMode !== "score") vlcTogglePause()
         delayTimer.stop()
     }
@@ -399,16 +582,23 @@ MuseScore {
         if (playMode !== "score") vlcStop()
         delayTimer.stop()
         root._scoreIsPlaying = false
+        root._scorePaused = false
+        root._cursorMovedWhilePaused = false
     }
 
     function transportRewind() {
-        if (playMode !== "audio") cmd("rewind")
+        if (playMode !== "audio") {
+            cmd("rewind")
+            // Drop the selection so Play isn't taken from a stale cursor position.
+            try { if (curScore) curScore.selection.clear() } catch (e) {}
+            root._selTick = -1
+        }
         if (playMode !== "score") vlcSeek(0)
     }
 
     function togglePlayPause() {
         if (!canPlay) return
-        var active = root._scoreIsPlaying || root.isPlaying || root.vlcState === "paused"
+        var active = root._scoreIsPlaying || root._scorePaused || root.isPlaying || root.vlcState === "paused"
         if (!active) transportPlay()
         else transportPause()
     }
@@ -418,6 +608,8 @@ MuseScore {
     property string fileName: ""
     property bool   isPlaying: false
     property bool   _scoreIsPlaying: false   // tracks whether we started score playback
+    property bool   _scorePaused: false      // we paused score playback and can resume it
+    property bool   _cursorMovedWhilePaused: false
     property string statusText: "v" + version + " — Ready"
     property string currentScoreKey: ""
     property var    fileDialog: null
@@ -517,6 +709,7 @@ MuseScore {
         root.offsetMs    = s && s.delayMs !== undefined ? s.delayMs : _cfgGet("delayMs", 0)
         root.audioVolume = s && s.volume !== undefined ? s.volume : _cfgGet("volume", 1.0)
         root.playMode    = s && s.mode ? s.mode : "both"
+        root.syncCursor  = s && s.follow !== undefined ? s.follow : true
         _loading = false
 
         if (vlcConnected) { applyVolume(); applyRate() }
@@ -544,7 +737,7 @@ MuseScore {
         var key = scoreKey()
         if (key === "") return
         var map = _jsonGet("scoreSettings", {})
-        map[key] = { delayMs: root.offsetMs, volume: root.audioVolume, mode: root.playMode }
+        map[key] = { delayMs: root.offsetMs, volume: root.audioVolume, mode: root.playMode, follow: root.syncCursor }
         _cfgSet("scoreSettings", JSON.stringify(map))
     }
 
@@ -575,6 +768,8 @@ MuseScore {
         }
 
         loadForScore()
+        if (curScore) _buildTempoMap()
+        root._selTick = -1
         if (_initQtPlayer()) return
         // QtMultimedia missing: fall back to VLC.
         _vlcGet("", function(ok, xml) {
@@ -594,6 +789,8 @@ MuseScore {
         if (key !== currentScoreKey) {
             transportStop()
             loadForScore()
+            _buildTempoMap()
+            root._selTick = -1
             return
         }
         // Detect score finishing (MU4 exposes state.isPlaying in some versions).
@@ -618,6 +815,13 @@ MuseScore {
             else if (root._delayTarget === "score") cmd("play")
             root._delayTarget = ""
         }
+    }
+
+    Timer {
+        interval: 200
+        repeat: true
+        running: root.syncCursor && root.playMode === "both"
+        onTriggered: root.pollCursor()
     }
 
     Timer {
@@ -1123,6 +1327,15 @@ MuseScore {
                         + (root.loopOn ? (root.audioMode ? "  ● on" : "  ● on (Audio mode only)") : "")
             }
 
+            Text {
+                width: parent.width
+                color: root.tempoMismatch ? "#c07000" : pal.mid
+                font.pixelSize: 11
+                elide: Text.ElideRight
+                text: (root.syncInfo !== "" ? root.syncInfo : "Cursor sync: select a note to align the audio")
+                      + (root.tempoMismatch ? "  ·  tempo map ≠ score length (repeats / rit.?)" : "")
+            }
+
             // ── Transport ─────────────────────────────────────────────────
             Item {
                 width: parent.width
@@ -1284,12 +1497,24 @@ MuseScore {
                             }
                         }
 
-                        PBtn {
-                            text: "Reset"
-                            implicitHeight: 24
-                            font.pixelSize: 11
-                            enabled: root.offsetMs !== 0
-                            onClicked: root.setOffset(0)
+                        Row {
+                            spacing: 4
+                            PBtn {
+                                text: "Reset"
+                                implicitHeight: 24
+                                font.pixelSize: 11
+                                enabled: root.offsetMs !== 0
+                                onClicked: root.setOffset(0)
+                            }
+                            PBtn {
+                                text: "Follow"
+                                implicitHeight: 24
+                                font.pixelSize: 11
+                                highlighted: root.syncCursor
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Both mode: seek the audio when you move the score cursor"
+                                onClicked: root.syncCursor = !root.syncCursor
+                            }
                         }
                     }
                 }
