@@ -43,7 +43,15 @@ To check logs after a crash or QML error:
 tail -f ~/.var/app/org.musescore.MuseScore/data/MuseScore/MuseScore4/logs/MuseScore*.log
 ```
 
+Lint before deploying (catches syntax errors that otherwise only show up when MuseScore loads the plugin). The binary is `qmllint-qt6`; the `MuseScore` import can't be resolved, so silence that noise:
+```bash
+qmllint-qt6 --unqualified disable --import disable AudioCompanion.qml
+```
+Expected leftover: `themeHolder` "not found on type QQuickItem" warnings (intentional dynamic ancestor lookup in `PBtn`/`PSlider`); anything else is real.
+
 QtMultimedia is confirmed working in the Flatpak sandbox (tested via probe plugin).
+
+The UI follows MuseScore's theme by reading `ui/application/currentThemeCode` from `MuseScore4.ini` (polled every 2 s; plugin API has no theme access — `api.theme` is extensions-only). Accent colour follows the theme default, not a user-customised one (planned).
 
 ## MU4 QML Rules (always follow)
 
