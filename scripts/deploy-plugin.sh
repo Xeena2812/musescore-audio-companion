@@ -1,6 +1,6 @@
 #!/bin/sh
 # Copies AudioCompanion.qml into the MuseScore plugins folder.
-# Called by the git post-merge / post-checkout / post-rewrite hooks (see
+# Called by the .githooks post-merge / post-checkout / post-rewrite hooks (see
 # scripts/install-git-hooks.sh); only deploys from the main checkout, never
 # from a linked worktree.
 top=$(git rev-parse --show-toplevel) || exit 0

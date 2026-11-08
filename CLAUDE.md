@@ -36,7 +36,7 @@ There is no build step. Edit `.qml` files in this repo, **copy to the MuseScore 
 scripts/deploy-plugin.sh   # or: cp AudioCompanion.qml ~/Documents/MuseScore4/Plugins/
 ```
 
-The git hooks `post-merge`/`post-checkout`/`post-rewrite` (installed per clone by `scripts/install-git-hooks.sh`; hooks aren't versioned) run `deploy-plugin.sh` automatically. It deploys from the **main checkout only** (never a linked worktree) and skips if the file is unchanged. When testing a worktree branch, `cp` the worktree's `AudioCompanion.qml` into the Plugins folder yourself, and don't run the deploy script from the main checkout, or you will silently be back on `main`'s version. `AUDIO_COMPANION_PLUGIN_DIR` overrides the destination.
+The versioned git hooks in `.githooks/` (`post-merge`/`post-checkout`/`post-rewrite`) run `deploy-plugin.sh` automatically. **They are inactive until `scripts/install-git-hooks.sh` has been run in the clone** (it sets `core.hooksPath`; git never enables hooks on clone). If a fresh clone isn't auto-deploying, that is why. It deploys from the **main checkout only** (never a linked worktree) and skips if the file is unchanged. When testing a worktree branch, `cp` the worktree's `AudioCompanion.qml` into the Plugins folder yourself, and don't run the deploy script from the main checkout, or you will silently be back on `main`'s version. `AUDIO_COMPANION_PLUGIN_DIR` overrides the destination.
 
 Simply re-running the plugin from the menu re-executes `onRun` but does **not** re-parse the QML. In principle disable + re-enable (`Plugins → Manage Plugins → uncheck → check → Close`) should be enough for structural/UI changes — but on the current Flatpak/Fedora dev setup this has proven **unreliable**: changes sometimes don't take effect until MuseScore is **fully quit and relaunched**. If a reload doesn't seem to be taking effect (stale behavior, old UI), restart the whole app before assuming the change is wrong.
 
@@ -107,13 +107,14 @@ The audio file path must come from a user-initiated file picker (not a hardcoded
 - `AudioCompanion.qml` — the whole plugin (the only file deployed to the Plugins folder).
 - `AudioCompanionProbe*.qml` — throwaway probes, not deployed; don't copy them into the Plugins folder.
 - `install/` — per-OS `audiocompanion://` URL-handler installers and VLC launchers (fallback engine only).
-- `scripts/` — `deploy-plugin.sh`, `install-git-hooks.sh`.
+- `scripts/` — `deploy-plugin.sh`, `install-git-hooks.sh` (enables `.githooks/`).
+- `.githooks/` — versioned git hooks that deploy the plugin.
 - `docs/agents/` — config for the agent skills below. `.agents/skills/` holds the skill files, `.claude/skills/*` are symlinks into it, `skills-lock.json` pins versions. `.claude/settings.local.json` and `.claude/worktrees/` are machine-local and gitignored.
 - Versioning: the `version:` property at the top of `AudioCompanion.qml` is the single source; use the `release` skill to bump, commit and tag.
 
 ## Setting up a new machine
 
-1. Clone, then `scripts/install-git-hooks.sh` (hooks aren't versioned).
+1. **Right after cloning, run `scripts/install-git-hooks.sh`** to enable the versioned hooks in `.githooks/` (`core.hooksPath` is per-clone config; skipping it means no auto-deploy).
 2. Install MuseScore 4 and the Qt Multimedia + GStreamer packages (see Environment), plus `gh auth login`.
 3. `scripts/deploy-plugin.sh`, fully restart MuseScore, enable the plugin in Manage Plugins.
 4. Optional, VLC fallback only: run the OS installer in `install/` (and install VLC).
