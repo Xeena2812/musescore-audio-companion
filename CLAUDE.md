@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A MuseScore 4 plugin (QML) that plays back an external audio file synchronized with score playback. The plugin owns the transport: its Play/Pause/Stop controls drive both MuseScore's internal playback engine and an external audio file simultaneously.
 
-**Shipped (v1.3.0):** file loading, ms delay offset with nudges, volume/mute, speed (Audio mode), A–B loop (Audio mode), recent files, per-score settings, keyboard shortcuts. **Still planned:** seek-on-cursor-move via `onScoreStateChanged` + `selectionChanged` (needs cursor/tempo API; unverified in 4.7.4).
+**Shipped (v1.4.0):** file loading, ms delay offset with nudges, volume/mute, speed (Audio mode), A–B loop (Audio mode), recent files, per-score settings, keyboard shortcuts, **Follow cursor** (selection → audio seek, Both mode). **Not feasible on 4.7.4:** live drift correction (no playback position in the plugin API). **Tried and dropped:** a "Move to cursor" button (audio position → score selection) selected the wrong note and was removed; revisit if wanted. See "Score position API" below.
 
 ## Environment
 
@@ -64,6 +64,24 @@ The UI follows MuseScore's theme by reading `ui/application/currentThemeCode` fr
 - Reusable styled controls (`PBtn`, `PSlider`) are **inline `component`s** inside `AudioCompanion.qml`. Don't add extra `.qml` files to the Plugins folder: MuseScore scans that folder and would list each file as a plugin.
 - For file pickers, use `Qt.labs.platform.FileDialog` loaded via `Qt.createQmlObject` (dynamic import), so the plugin still loads if the module is absent from the snap. Connect signals imperatively with `.onAccepted.connect(...)`
 - **Do not `import Qt.labs.settings`** — Settings is integrated into the MuseScore module
+
+## Score position API (probed on MuseScore 4.7.4)
+
+Verified with a throwaway probe plugin (not kept in the repo):
+
+- **Never enumerate** plugin API objects: `for..in` over `curScore` and `n in cursor` both SIGSEGV MuseScore. Read named properties directly.
+- 480 ticks per quarter. `curScore.lastSegment.tick` is the end; `curScore.duration` is seconds. There is **no `curScore.tempo(tick)`** and no tick→time function (`cursor.time` is a method of unknown meaning). `cursor.tempo` exists (quarter notes/s).
+- Tempo map: walk `curScore.newCursor()` from `Cursor.SCORE_START` with `next()`, read `cursor.segment.annotations`, keep `type === Element.TEMPO_TEXT`; `.tempo` is quarter notes per second. Gradual changes and repeats are not represented (the plugin compares the result with `curScore.duration` and warns).
+- Selection tick: if `selection.isRange` use `selection.startSegment.tick` (a whole measure gives the measure start); otherwise walk `selection.elements[0].parent` up to the element named `"Segment"` and use its `.tick` (`Measure.tick` is a Fraction object, unusable). Single-note selections report `isRange=false`, `startSegment=null`.
+- Moving the selection works with `cursor.rewindToTick(t)` then `curScore.selection.select(cursor.element)`. `selection.selectRange(...)` returned false when called without `selection.clear()` first and with a 1-tick range; the mcp-musescore plugin calls `clear()` then `selectRange(start, start+duration, staff, staff+1)`.
+- **No live playback position**: during `cmd("play")` the cursor and selection stay fixed, and no play-position property exists. Hence no drift correction.
+- **`onScoreStateChanged` did not fire** in a probe plugin on selection changes or `cmd("next-measure")`, so Follow polls the selection every 200 ms instead (only in Both mode, when nothing is playing).
+- Offset convention: audio time = score time − `offsetMs` (positive offset = audio starts later); tick 0 keeps the lead-in path used by `transportPlay`.
+- `cmd("play")` is a toggle; pausing is tracked with `_scorePaused` so the ▶/⏸ button flips back and Resume re-toggles. If the cursor moved while paused, Resume does stop + `transportPlay()` so score and audio restart together from the cursor.
+
+## Dev gotcha
+
+`scripts/deploy-plugin.sh` and the git hooks copy `AudioCompanion.qml` from the **main checkout** only. When testing a worktree branch, `cp` the worktree's file into `~/Documents/MuseScore4/Plugins/` yourself, and don't run the deploy script, or you will silently be back on `main`'s version.
 
 ## Architecture
 

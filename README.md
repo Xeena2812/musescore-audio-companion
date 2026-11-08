@@ -9,6 +9,7 @@ A MuseScore 4 plugin that plays an external audio file in sync with score playba
 - ±3 s / ±10 s skip buttons and a seekable progress bar
 - Configurable ms-level delay offset so the audio and score stay in sync
 - Volume control
+- **Follow cursor** (Both mode): click a note or a measure and the audio seeks to the matching point; Play then starts both from there
 - Remembers which audio file belongs to each score
 
 ## Audio engine
@@ -61,7 +62,13 @@ Port and password are fixed (`9091` / `musescore`) in the plugin and the launche
 
 Click **Load Audio…** and select your file. The plugin remembers your choice per score.
 
-**3. Play**
+**3. Follow the cursor (Both mode)**
+
+With **Follow** on (Sync and mix panel; remembered per score), selecting a note or a whole measure while the audio isn't playing seeks the audio to that point (score time minus the offset), and ▶ starts the score and audio together from the selection. Clicking a new spot while paused makes Resume restart both from it; re-clicking the already-selected note can't be detected, so use Stop then ▶ for that. The alignment uses the score's tempo texts. Gradual tempo changes (rit./accel.) and repeats are not modelled, and the info line turns amber when the tempo map disagrees with the score length.
+
+Not available in MuseScore 4.7.4: there is no live playback position in the plugin API, so the audio is aligned at rest and at Play time only - no continuous drift correction while playing. Use the offset to fine-tune.
+
+**4. Play**
 
 Press ▶ — both the score and the audio start together. Use the **Offset** spinner to adjust sync in milliseconds (positive = audio starts after the score, negative = audio starts before).
 
