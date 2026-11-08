@@ -33,8 +33,10 @@ QML plugins can't spawn processes, so `_tryLaunchVlc()` calls `Qt.openUrlExterna
 There is no build step. Edit `.qml` files in this repo, **copy to the MuseScore plugins folder**, then get MuseScore to pick up the change:
 
 ```bash
-cp ~/Projects/musescore-audio-companion/AudioCompanion.qml ~/Documents/MuseScore4/Plugins/
+scripts/deploy-plugin.sh   # or: cp AudioCompanion.qml ~/Documents/MuseScore4/Plugins/
 ```
+
+The git hooks `post-merge`/`post-checkout`/`post-rewrite` (installed per clone by `scripts/install-git-hooks.sh`; hooks aren't versioned) run `deploy-plugin.sh` automatically. It deploys from the **main checkout only** (never a linked worktree) and skips if the file is unchanged. When testing a worktree branch, `cp` the worktree's `AudioCompanion.qml` into the Plugins folder yourself, and don't run the deploy script from the main checkout, or you will silently be back on `main`'s version. `AUDIO_COMPANION_PLUGIN_DIR` overrides the destination.
 
 Simply re-running the plugin from the menu re-executes `onRun` but does **not** re-parse the QML. In principle disable + re-enable (`Plugins → Manage Plugins → uncheck → check → Close`) should be enough for structural/UI changes — but on the current Flatpak/Fedora dev setup this has proven **unreliable**: changes sometimes don't take effect until MuseScore is **fully quit and relaunched**. If a reload doesn't seem to be taking effect (stale behavior, old UI), restart the whole app before assuming the change is wrong.
 
@@ -79,10 +81,6 @@ Verified with a throwaway probe plugin (not kept in the repo):
 - Offset convention: audio time = score time − `offsetMs` (positive offset = audio starts later); tick 0 keeps the lead-in path used by `transportPlay`.
 - `cmd("play")` is a toggle; pausing is tracked with `_scorePaused` so the ▶/⏸ button flips back and Resume re-toggles. If the cursor moved while paused, Resume does stop + `transportPlay()` so score and audio restart together from the cursor.
 
-## Dev gotcha
-
-`scripts/deploy-plugin.sh` and the git hooks copy `AudioCompanion.qml` from the **main checkout** only. When testing a worktree branch, `cp` the worktree's file into `~/Documents/MuseScore4/Plugins/` yourself, and don't run the deploy script, or you will silently be back on `main`'s version.
-
 ## Architecture
 
 The plugin is a single QML component tree. Key responsibilities:
@@ -92,14 +90,45 @@ The plugin is a single QML component tree. Key responsibilities:
 | MuseScore playback control | `cmd("play")`, `cmd("stop")` via the MuseScore plugin API |
 | Audio file playback | `QtMultimedia.MediaPlayer` + `AudioOutput` (Qt 6 API) |
 | Sync on play | Start both engines together; use the ms delay offset to schedule the audio start via a `Timer` |
-| Seek on cursor move | `onScoreStateChanged` → read `curScore.selection` tick → convert tick→ms → `mediaPlayer.position = ms` |
-| Delay offset | Stored in `Settings`; applied at play-start: positive = audio starts after score, negative = audio starts before score |
-| Persistent settings | `Settings` (built into MuseScore module) — do not import separately |
+| Follow cursor (Both mode) | A 200 ms `Timer` polls the selection (`onScoreStateChanged` doesn't fire — see "Score position API"): `_selectionTick()` → `_tickToMs()` → `_seekAudioToTick()`. Only runs while Follow is on and nothing is playing |
+| Delay offset | Stored in `Settings`; audio time = score time − offset (positive = audio starts after score, negative = before) |
+| Persistent settings | `Settings` (built into MuseScore module) — do not import separately; Follow, offset and the audio file are remembered per score |
 
 ### Tick → milliseconds conversion
 
-MuseScore exposes tempo via `curScore.tempo(tick)` (returns BPS). Convert a tick position to ms by integrating tempo changes across the score's tempo map. There is no single built-in call for this; it must be computed from the score's segment list.
+There is no `curScore.tempo(tick)` and no built-in tick→time call. `_buildTempoMap()` collects the score's tempo texts and `_tickToMs()` / `_msToTick()` integrate across them; gradual tempo changes and repeats aren't modelled, so the plugin compares the total with `curScore.duration` and warns (amber info line) on mismatch. Details in "Score position API".
 
-## Snap Sandbox Constraints
+## File access
 
-The snap confines file access. The audio file path must come from a user-initiated file picker (not a hardcoded path). If `QtQuick.Dialogs` is unavailable, implement a path input field as a fallback.
+The audio file path must come from a user-initiated file picker (not a hardcoded path); a recent-files list is kept. Under Flatpak the app has full `$HOME` access, so the sandbox rarely blocks reads, but keep the picker flow so the plugin still works on confined installs (snap).
+
+## Repository layout
+
+- `AudioCompanion.qml` — the whole plugin (the only file deployed to the Plugins folder).
+- `AudioCompanionProbe*.qml` — throwaway probes, not deployed; don't copy them into the Plugins folder.
+- `install/` — per-OS `audiocompanion://` URL-handler installers and VLC launchers (fallback engine only).
+- `scripts/` — `deploy-plugin.sh`, `install-git-hooks.sh`.
+- `docs/agents/` — config for the agent skills below. `.agents/skills/` holds the skill files, `.claude/skills/*` are symlinks into it, `skills-lock.json` pins versions. `.claude/settings.local.json` and `.claude/worktrees/` are machine-local and gitignored.
+- Versioning: the `version:` property at the top of `AudioCompanion.qml` is the single source; use the `release` skill to bump, commit and tag.
+
+## Setting up a new machine
+
+1. Clone, then `scripts/install-git-hooks.sh` (hooks aren't versioned).
+2. Install MuseScore 4 and the Qt Multimedia + GStreamer packages (see Environment), plus `gh auth login`.
+3. `scripts/deploy-plugin.sh`, fully restart MuseScore, enable the plugin in Manage Plugins.
+4. Optional, VLC fallback only: run the OS installer in `install/` (and install VLC).
+5. Auto-memory lives outside the repo (`~/.claude/projects/<path-derived-dir>/memory/`) — copy it over manually if wanted.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`Xeena2812/musescore-audio-companion`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
